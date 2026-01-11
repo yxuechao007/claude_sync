@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	// GitHub OAuth App Client ID (公开的，用于 Device Flow)
-	// 用户需要创建自己的 OAuth App 或使用 PAT
+	// GitHub OAuth App Client ID (用于 Device Flow)
+	githubClientID       = "Ov23liWm8A0zJ9iKh7am"
 	githubDeviceCodeURL  = "https://github.com/login/device/code"
 	githubAccessTokenURL = "https://github.com/login/oauth/access_token"
 	githubDeviceAuthURL  = "https://github.com/login/device"
@@ -65,33 +65,81 @@ func GetToken() (string, error) {
 	}
 }
 
-// browserAuth 使用浏览器进行 OAuth 认证
+// browserAuth 使用 GitHub Device Flow 进行 OAuth 认证
 func browserAuth() (string, error) {
-	fmt.Println("\n📋 浏览器授权说明:")
+	// 第一步：获取 device code
+	reqBody := fmt.Sprintf("client_id=%s&scope=gist", githubClientID)
+	req, err := http.NewRequest("POST", githubDeviceCodeURL, bytes.NewBufferString(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var deviceResp DeviceCodeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&deviceResp); err != nil {
+		return "", fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	// 显示用户码
+	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println()
-	fmt.Println("由于 claude-sync 是开源工具，需要你创建自己的 GitHub OAuth App")
-	fmt.Println("或者使用 Personal Access Token (PAT)。")
-	fmt.Println()
-	fmt.Println("创建 PAT 的步骤:")
-	fmt.Println("  1. 打开 https://github.com/settings/tokens/new")
-	fmt.Println("  2. 填写 Note: claude-sync")
-	fmt.Println("  3. 选择 Expiration (建议 90 天或更长)")
-	fmt.Println("  4. 勾选权限: ✓ gist (Create gists)")
-	fmt.Println("  5. 点击 Generate token")
-	fmt.Println("  6. 复制生成的 token")
+	fmt.Printf("  请访问: %s\n", deviceResp.VerificationURI)
+	fmt.Printf("  输入代码: %s\n", deviceResp.UserCode)
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
 
 	// 尝试打开浏览器
-	url := "https://github.com/settings/tokens/new?description=claude-sync&scopes=gist"
-	fmt.Printf("正在打开浏览器: %s\n", url)
-
-	if err := openBrowser(url); err != nil {
-		fmt.Printf("无法自动打开浏览器，请手动访问上述链接\n")
+	if err := openBrowser(deviceResp.VerificationURI); err != nil {
+		fmt.Println("无法自动打开浏览器，请手动访问上述链接")
+	} else {
+		fmt.Println("已打开浏览器，请在页面中输入上述代码并授权")
 	}
 
-	fmt.Println()
-	return manualTokenInput()
+	// 轮询等待用户授权
+	fmt.Print("\n等待授权")
+	interval := time.Duration(deviceResp.Interval) * time.Second
+	if interval < 5*time.Second {
+		interval = 5 * time.Second
+	}
+
+	deadline := time.Now().Add(time.Duration(deviceResp.ExpiresIn) * time.Second)
+
+	for time.Now().Before(deadline) {
+		time.Sleep(interval)
+		fmt.Print(".")
+
+		token, err := pollForToken(githubClientID, deviceResp.DeviceCode)
+		if err != nil {
+			if err.Error() == "slow_down" {
+				interval += 5 * time.Second
+			}
+			continue
+		}
+		if token != "" {
+			fmt.Println(" OK")
+			fmt.Println()
+
+			// 自动保存 token
+			if err := saveTokenToConfig(token); err != nil {
+				fmt.Printf("保存 token 失败: %v\n", err)
+			} else {
+				fmt.Println("Token 已保存到 ~/.claude-sync/token")
+			}
+
+			return token, nil
+		}
+	}
+
+	fmt.Println(" 超时")
+	return "", fmt.Errorf("授权超时，请重试")
 }
 
 // manualTokenInput 手动输入 token
