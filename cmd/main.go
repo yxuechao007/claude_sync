@@ -292,6 +292,8 @@ func cmdPull(args []string) {
 	autoYesLong := fs.Bool("yes", false, "Auto-confirm all changes")
 	applyMCP := fs.Bool("apply-mcp", false, "Apply global MCP config to current project after pull")
 	applyMCPOverwrite := fs.Bool("apply-mcp-overwrite", false, "Overwrite project MCP config when applying")
+	useRemote := fs.Bool("use-remote", false, "Use remote config (overwrite local)")
+	keepLocal := fs.Bool("keep-local", false, "Keep local config (only add new items from remote)")
 	fs.Parse(args)
 
 	// 合并 -y 和 --yes
@@ -323,11 +325,52 @@ func cmdPull(args []string) {
 		fmt.Println()
 	}
 
+	// 合并策略: "remote"(使用远端), "local"(保留本地), "merge"(智能合并)
+	mergeStrategy := "merge" // 默认智能合并
+	if *useRemote {
+		mergeStrategy = "remote"
+	} else if *keepLocal {
+		mergeStrategy = "local"
+	}
+
 	// Hooks 策略: overwrite(覆盖), keep(保留本地), merge(智能合并)
 	hooksStrategy := "overwrite"
 	if *keepHooks {
 		hooksStrategy = "keep"
 	}
+
+	// 新机器首次同步时询问合并策略
+	if !*dryRun && !*useRemote && !*keepLocal && !confirmAll {
+		isFirstSync, hasLocalConfig := engine.CheckFirstSyncWithLocalConfig()
+		if isFirstSync && hasLocalConfig {
+			fmt.Println("\n🔄 检测到这是新机器首次同步，且本地已有配置")
+			fmt.Println("\n如何处理本地与远端配置的差异?")
+			fmt.Println("  [1] 使用远端配置 (覆盖本地)")
+			fmt.Println("  [2] 保留本地配置 (只添加远端新增项)")
+			fmt.Println("  [3] 智能合并 (合并两边，冲突时逐个询问)")
+			fmt.Println("  [4] 取消")
+			fmt.Print("\n请选择 [1/2/3/4]: ")
+
+			reader := bufio.NewReader(os.Stdin)
+			response, _ := reader.ReadString('\n')
+			response = strings.TrimSpace(response)
+
+			switch response {
+			case "1":
+				mergeStrategy = "remote"
+			case "2":
+				mergeStrategy = "local"
+			case "3":
+				mergeStrategy = "merge"
+			default:
+				fmt.Println("已取消。")
+				os.Exit(0)
+			}
+		}
+	}
+
+	// 设置合并策略
+	engine.SetMergeStrategy(mergeStrategy)
 
 	// Check for conflicts if not forcing
 	if !*force && !*dryRun {

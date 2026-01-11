@@ -99,6 +99,38 @@ func MergeJSON(original, filtered []byte, filter *config.FilterConfig) ([]byte, 
 	return result, nil
 }
 
+// MergeJSONKeepLocal merges JSON keeping local values, only adding new fields from remote
+// This is used when the user chooses "keep local" strategy
+func MergeJSONKeepLocal(original, filtered []byte, filter *config.FilterConfig) ([]byte, error) {
+	if filter == nil {
+		return original, nil
+	}
+
+	var origObj map[string]interface{}
+	if err := json.Unmarshal(original, &origObj); err != nil {
+		origObj = make(map[string]interface{})
+	}
+
+	var filteredObj map[string]interface{}
+	if err := json.Unmarshal(filtered, &filteredObj); err != nil {
+		return nil, fmt.Errorf("failed to parse filtered JSON: %w", err)
+	}
+
+	// Only add fields that don't exist in original
+	for key, value := range filteredObj {
+		if _, exists := origObj[key]; !exists {
+			origObj[key] = value
+		}
+	}
+
+	result, err := json.MarshalIndent(origObj, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal merged JSON: %w", err)
+	}
+
+	return result, nil
+}
+
 // ExtractFields extracts specific fields from JSON
 func ExtractFields(data []byte, fields []string) (map[string]interface{}, error) {
 	var obj map[string]interface{}

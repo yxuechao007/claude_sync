@@ -149,7 +149,7 @@ func (e *Engine) SyncMCPOnInit() error {
 	}
 
 	for _, write := range writes {
-		if err := e.writeLocalContent(write.item, write.content); err != nil {
+		if err := e.writeLocalContent(write.item, write.content, true); err != nil {
 			return fmt.Errorf("failed to write %s: %w", write.item.LocalPath, err)
 		}
 	}

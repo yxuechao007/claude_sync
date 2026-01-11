@@ -128,3 +128,29 @@ func TestCalculateLocalHashFiltersLocalHooks(t *testing.T) {
 		t.Fatalf("hash = %q, want %q", hash, expected)
 	}
 }
+
+func TestPrepareWriteContentKeepLocalSkipsWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"a":1}`), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	engine := &Engine{mergeStrategy: "local"}
+	item := config.SyncItem{
+		Name:      "config",
+		LocalPath: path,
+		Type:      "file",
+	}
+
+	prepared, skipWrite, err := engine.prepareWriteContent(item, `{"a":2}`)
+	if err != nil {
+		t.Fatalf("prepareWriteContent: %v", err)
+	}
+	if !skipWrite {
+		t.Fatalf("skipWrite = false, want true")
+	}
+	if prepared != `{"a":1}` {
+		t.Fatalf("prepared = %s, want %s", prepared, `{"a":1}`)
+	}
+}

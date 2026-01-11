@@ -31,7 +31,55 @@ go build -o claude_sync ./cmd
 mv claude_sync /usr/local/bin/
 ```
 
-## 使用
+## 快速上手
+
+按你的使用场景选择一条：
+
+**场景 1：第一台设备（首次使用）**
+
+```bash
+claude_sync init      # 创建新的 Gist
+claude_sync push      # 推送本地配置到 Gist
+```
+
+**场景 2：新机器同步（已有 Gist，同一 GitHub 账号）**
+
+```bash
+claude_sync init      # 自动查找并关联已有 Gist
+claude_sync pull      # 拉取远端配置（会询问合并策略）
+claude_sync push      # 推送合并后的配置
+```
+
+> **说明**：
+> - `init` 会自动搜索你账号下的 claude_sync Gist，无需手动指定 `--gist-id`
+> - 如果新机器本地已有 Claude 配置，直接 `push` 会提示 `remote is ahead`，需要先 `pull`
+> - **首次 pull 时会询问合并策略**：
+>   - `[1] 使用远端配置` - 覆盖本地
+>   - `[2] 保留本地配置` - 只添加远端新增项
+>   - `[3] 智能合并` - 合并两边，冲突时逐个询问
+> - 如遇 MCP 配置冲突（如 `chrome-dev-tool` 本地和远端不同），会显示差异并让你选择
+> - 合并后 `push` 将完整配置同步回 Gist
+
+**场景 3：新机器同步（不同 GitHub 账号或指定 Gist）**
+
+```bash
+claude_sync init --gist-id <id>   # 手动指定 Gist ID
+claude_sync pull
+claude_sync push
+```
+
+**场景 4：把全局 MCP 配置应用到当前项目**
+
+```bash
+claude_sync mcp-apply
+```
+
+**常见工作流**：
+- 本地改了配置 → `claude_sync push`
+- 远端有更新 → `claude_sync pull`
+- 新项目需要 MCP → `claude_sync mcp-apply`
+
+## 详细使用
 
 ### 初始化
 
@@ -74,9 +122,11 @@ claude_sync push --dry-run          # 预览变更
 claude_sync push --force            # 强制推送（覆盖冲突）
 
 # 拉取 Gist 配置到本地
-claude_sync pull                    # 显示 diff 并确认
+claude_sync pull                    # 显示 diff 并确认（首次同步会询问合并策略）
 claude_sync pull -y                 # 自动确认所有修改
 claude_sync pull --force            # 强制拉取（覆盖冲突）
+claude_sync pull --use-remote       # 使用远端配置（覆盖本地）
+claude_sync pull --keep-local       # 保留本地配置（只添加远端新增项）
 claude_sync pull --keep-hooks       # 保留本地 hooks
 claude_sync pull --apply-mcp        # 同时同步 MCP 到当前项目
 claude_sync pull --apply-mcp --apply-mcp-overwrite
@@ -179,6 +229,77 @@ claude_sync help                    # 帮助信息
   - `local_ahead` - 本地有新改动
   - `remote_ahead` - 远程有新改动
   - `conflict` - 双方都有改动
+
+### 合并策略
+
+**新机器首次 Pull 时会询问合并策略**：
+
+```
+🔄 检测到这是新机器首次同步，且本地已有配置
+
+如何处理本地与远端配置的差异?
+  [1] 使用远端配置 (覆盖本地)
+  [2] 保留本地配置 (只添加远端新增项)
+  [3] 智能合并 (合并两边，MCP 冲突时逐个询问)
+  [4] 取消
+```
+
+**策略对不同文件类型的影响**：
+
+| 策略 | MCP 配置 (claude.json) | 带过滤的 JSON (settings.json) | 普通文件 (marketplaces.json) |
+|------|------------------------|------------------------------|------------------------------|
+| 使用远端 | 覆盖本地 | 远端字段覆盖本地 | 覆盖本地 |
+| 保留本地 | 只添加远端新增 MCP | 只添加远端新增字段 | 保留本地不变 |
+| 智能合并 | 合并，冲突时询问 | 远端字段覆盖本地 | 覆盖本地 |
+
+> **注意**：逐条冲突询问**仅对 MCP 配置**生效（`mcpServers` 和 `projects[].mcpServers`）。其他文件不会逐字段询问。
+
+**MCP 冲突解决**（智能合并模式）：
+
+当同一个 MCP server（如 `chrome-dev-tool`）本地和远端配置不同时，会显示差异并询问：
+
+```
+⚠️  配置冲突: mcpServers.chrome-dev-tool
+┌─ 本地配置:
+│  { "command": "/usr/local/bin/chrome-dev-tool", ... }
+├─ 远端配置:
+│  { "command": "/opt/chrome-dev-tool", ... }
+└─
+
+选择:
+  [1] 使用远端配置
+  [2] 保留本地配置
+  [3] 全部使用远端 (后续冲突不再询问)
+  [4] 全部保留本地 (后续冲突不再询问)
+```
+
+**合并示例**：
+
+```
+本地 mcpServers: { "serverA": {...}, "serverB": {...} }
+远端 mcpServers: { "serverA": {...不同}, "serverC": {...} }
+智能合并后: { "serverA": {...用户选择}, "serverB": {...}, "serverC": {...} }
+```
+
+- **去重机制**：相同 key 只保留一份，不会无限增长
+- **projects 中的 mcpServers**：同样按 key 合并，冲突时询问
+- **保留本地策略**：已有项目的 mcpServers 也会添加远端新增的 key（不会覆盖已有 key）
+
+**Push 时的行为**：
+
+- 项目级 MCP 配置会合并到全局 mcpServers 后再推送
+- 确保在某个项目中配置的 MCP 服务器能同步到其他设备
+
+**新机器首次同步**：
+
+- `init` 后直接 `push` 会提示 `remote is ahead`
+- 需要先 `pull` 合并配置，再 `push` 推送
+
+**命令行参数**：
+
+- `--use-remote`：直接使用远端配置，跳过询问
+- `--keep-local`：保留本地配置，只添加远端新增项（对所有文件生效）
+- `-y`：自动确认（MCP 冲突时默认保留本地）
 
 ### Diff 确认
 

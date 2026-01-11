@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yxuechao007/claude_sync/internal/archive"
@@ -42,10 +43,11 @@ type ItemStatus struct {
 
 // Engine handles the sync operations
 type Engine struct {
-	cfg     *config.Config
-	state   *config.SyncState
-	client  *gist.Client
-	autoYes bool // 自动确认所有修改
+	cfg           *config.Config
+	state         *config.SyncState
+	client        *gist.Client
+	autoYes       bool   // 自动确认所有修改
+	mergeStrategy string // 合并策略: "remote", "local", "merge"
 }
 
 type syncDirection string
@@ -71,6 +73,64 @@ type statusInfo struct {
 // SetAutoYes 设置是否自动确认所有修改
 func (e *Engine) SetAutoYes(yes bool) {
 	e.autoYes = yes
+}
+
+// SetMergeStrategy 设置合并策略
+func (e *Engine) SetMergeStrategy(strategy string) {
+	e.mergeStrategy = strategy
+}
+
+// GetMergeStrategy 获取合并策略
+func (e *Engine) GetMergeStrategy() string {
+	if e.mergeStrategy == "" {
+		return "merge" // 默认智能合并
+	}
+	return e.mergeStrategy
+}
+
+// CheckFirstSyncWithLocalConfig 检查是否是首次同步且本地有配置
+func (e *Engine) CheckFirstSyncWithLocalConfig() (isFirstSync bool, hasLocalConfig bool) {
+	// 首次同步：state.Version = 0
+	isFirstSync = e.state.Version == 0
+
+	if !isFirstSync {
+		return false, false
+	}
+
+	// 检查本地是否有配置文件
+	for _, item := range e.cfg.GetEnabledItems() {
+		localPath, err := config.ExpandPath(item.LocalPath)
+		if err != nil {
+			continue
+		}
+
+		if item.Type == "directory" {
+			// 检查目录是否存在且有非隐藏文件（修复：跳过仅有隐藏文件的目录）
+			entries, err := os.ReadDir(localPath)
+			if err == nil {
+				hasNonHidden := false
+				for _, entry := range entries {
+					if !strings.HasPrefix(entry.Name(), ".") {
+						hasNonHidden = true
+						break
+					}
+				}
+				if hasNonHidden {
+					hasLocalConfig = true
+					break
+				}
+			}
+		} else {
+			// 检查文件是否存在且非空
+			info, err := os.Stat(localPath)
+			if err == nil && info.Size() > 0 {
+				hasLocalConfig = true
+				break
+			}
+		}
+	}
+
+	return isFirstSync, hasLocalConfig
 }
 
 // NewEngine creates a new sync engine
@@ -183,9 +243,15 @@ func (e *Engine) getStatusWithRemote(remoteGist *gist.Gist) ([]ItemStatus, statu
 	}
 	info.effectiveRemoteVersion = effectiveRemoteVersion
 
+	// 特殊情况：本地从未同步过（state.Version = 0）且远端有版本
+	isFirstSync := e.state.Version == 0 && info.remoteVersion > 0
+
+	// 计算全局方向（仅用于双方都有改动时的冲突解决）
 	switch {
 	case !info.localDirty && !info.remoteDirty:
 		info.direction = directionSynced
+	case isFirstSync:
+		info.direction = directionRemote
 	case info.localVersion > effectiveRemoteVersion:
 		info.direction = directionLocal
 	case effectiveRemoteVersion > info.localVersion:
@@ -208,19 +274,29 @@ func (e *Engine) getStatusWithRemote(remoteGist *gist.Gist) ([]ItemStatus, statu
 			continue
 		}
 
+		// 基于 per-item hash 判断每个文件的状态（修复全局 version 覆盖问题）
 		if snap.localHash == snap.remoteHash {
+			// 内容相同，已同步
 			status.Status = StatusSynced
-		} else {
+		} else if snap.localChanged && !snap.remoteChanged {
+			// 只有本地改了，本地领先
+			status.Status = StatusLocalAhead
+		} else if !snap.localChanged && snap.remoteChanged {
+			// 只有远端改了，远端领先
+			status.Status = StatusRemoteAhead
+		} else if snap.localChanged && snap.remoteChanged {
+			// 双方都改了，冲突（使用全局 version 决定优先级）
 			switch info.direction {
 			case directionLocal:
 				status.Status = StatusLocalAhead
 			case directionRemote:
 				status.Status = StatusRemoteAhead
-			case directionConflict:
-				status.Status = StatusConflict
 			default:
 				status.Status = StatusConflict
 			}
+		} else {
+			// 都没改但 hash 不同（理论上不会发生，兜底为冲突）
+			status.Status = StatusConflict
 		}
 
 		statuses = append(statuses, status)
@@ -324,7 +400,12 @@ func (e *Engine) Push(dryRun bool, force bool) ([]ItemStatus, error) {
 				results = append(results, status)
 				continue
 			}
-		case StatusSynced, StatusRemoteAhead:
+		case StatusRemoteAhead:
+			// 远端有更新，需要先 pull
+			status.Error = fmt.Errorf("remote is ahead, run 'claude_sync pull' first")
+			results = append(results, status)
+			continue
+		case StatusSynced:
 			results = append(results, status)
 			continue
 		case StatusError:
@@ -417,6 +498,7 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 
 	var results []ItemStatus
 	appliedAny := false
+	keptLocal := make(map[string]string)
 
 	for _, status := range statuses {
 		item := e.findItem(status.Name)
@@ -458,16 +540,12 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 					continue
 				}
 
-				preparedContent := remoteFile.Content
-				if item.Type != "directory" {
-					updated, err := e.prepareWriteContent(*item, remoteFile.Content)
-					if err != nil {
-						status.Error = err
-						status.Status = StatusError
-						results = append(results, status)
-						continue
-					}
-					preparedContent = updated
+				preparedContent, skipWrite, err := e.prepareWriteContent(*item, remoteFile.Content)
+				if err != nil {
+					status.Error = err
+					status.Status = StatusError
+					results = append(results, status)
+					continue
 				}
 
 				// 读取本地当前内容用于 diff 显示
@@ -480,13 +558,14 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 				}
 
 				// 显示 diff 并等待确认（仅对文件类型）
-				if item.Type != "directory" && localContent != "" {
+				if item.Type != "directory" && localContent != "" && !skipWrite {
 					diff.ShowDiff(item.LocalPath, localContent, preparedContent)
 					result := diff.ConfirmChange(item.LocalPath, e.autoYes)
 
 					switch result {
 					case diff.ConfirmNo:
 						status.Status = StatusLocalAhead // 保持本地版本
+						keptLocal[status.Name] = status.RemoteHash
 						results = append(results, status)
 						continue
 					case diff.ConfirmQuit:
@@ -499,6 +578,7 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 						result = diff.ConfirmChange(item.LocalPath, e.autoYes)
 						if result == diff.ConfirmNo {
 							status.Status = StatusLocalAhead
+							keptLocal[status.Name] = status.RemoteHash
 							results = append(results, status)
 							continue
 						} else if result == diff.ConfirmQuit {
@@ -509,13 +589,15 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 					}
 				}
 
-				if err := e.writeLocalContent(*item, remoteFile.Content); err != nil {
-					status.Error = err
-					status.Status = StatusError
-					results = append(results, status)
-					continue
+				if !skipWrite {
+					if err := e.writeLocalContent(*item, preparedContent, true); err != nil {
+						status.Error = err
+						status.Status = StatusError
+						results = append(results, status)
+						continue
+					}
+					appliedAny = true
 				}
-				appliedAny = true
 
 				localHash, err := e.calculateLocalHash(*item)
 				if err != nil {
@@ -527,7 +609,12 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 				status.LocalHash = localHash
 			}
 
-			status.Status = StatusSynced
+			if e.GetMergeStrategy() == "local" && status.LocalHash != status.RemoteHash {
+				status.Status = StatusLocalAhead
+				keptLocal[status.Name] = status.RemoteHash
+			} else {
+				status.Status = StatusSynced
+			}
 			results = append(results, status)
 		}
 	}
@@ -544,10 +631,21 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 				}
 			}
 		}
+		for name, remoteHash := range keptLocal {
+			e.state.Items[name] = config.ItemState{
+				LocalHash:  remoteHash,
+				RemoteHash: remoteHash,
+				LastSync:   &now,
+			}
+		}
 		e.state.LastSync = &now
-		if appliedAny {
+
+		// 始终同步本地 version 到远端 version（修复：即使内容没变也要同步 version）
+		// 这样可以避免后续本地改动被误判为"远端领先"
+		if info.effectiveRemoteVersion > e.state.Version {
 			e.state.Version = info.effectiveRemoteVersion
 		}
+
 		if err := e.state.Save(); err != nil {
 			return nil, fmt.Errorf("failed to save state: %w", err)
 		}
@@ -632,35 +730,80 @@ func (e *Engine) getLocalContent(item config.SyncItem) (string, bool, error) {
 	return string(data), false, nil
 }
 
-func (e *Engine) prepareWriteContent(item config.SyncItem, content string) (string, error) {
+func (e *Engine) prepareWriteContent(item config.SyncItem, content string) (string, bool, error) {
+	strategy := e.GetMergeStrategy()
 	if item.Type == "directory" {
-		return content, nil
+		if strategy == "local" {
+			return "", true, nil
+		}
+		return content, false, nil
 	}
 
+	localPath, err := config.ExpandPath(item.LocalPath)
+	if err != nil {
+		return "", false, err
+	}
+
+	// 对 claude-json 特殊处理：先过滤字段，再合并 MCP 配置
+	if item.Name == "claude-json" || filepath.Base(localPath) == ".claude.json" {
+		// 先应用 filter 过滤不需要的字段
+		if item.Filter != nil {
+			filtered, err := filter.FilterJSON([]byte(content), item.Filter)
+			if err == nil {
+				content = string(filtered)
+			}
+		}
+
+		existing, err := os.ReadFile(localPath)
+		if err == nil && len(existing) > 0 {
+			// 使用与 writeLocalContent 一致的策略（修复：保证 diff 与实际写入一致）
+			merged, _, err := mcp.MergeMCPOnPullWithStrategy(existing, []byte(content), strategy, e.autoYes)
+			if err == nil {
+				content = string(merged)
+			}
+		}
+		return content, false, nil
+	}
+
+	// 对于非过滤文件，根据策略决定是否保留本地
 	if item.Filter == nil {
-		return content, nil
+		if strategy == "local" {
+			// 保留本地：如果本地文件存在，返回本地内容
+			existing, err := os.ReadFile(localPath)
+			if err == nil && len(existing) > 0 {
+				return string(existing), true, nil
+			}
+		}
+		// 使用远端或智能合并：直接返回远端内容
+		return content, false, nil
 	}
 
 	filtered, err := filter.FilterJSON([]byte(content), item.Filter)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	content = string(filtered)
 
-	localPath, err := config.ExpandPath(item.LocalPath)
-	if err != nil {
-		return "", err
-	}
 	existing, err := os.ReadFile(localPath)
 	if err == nil {
-		merged, err := filter.MergeJSON(existing, []byte(content), item.Filter)
-		if err != nil {
-			return "", err
+		// 根据策略处理（与 writeLocalContent 一致）
+		if strategy == "local" {
+			merged, err := filter.MergeJSONKeepLocal(existing, []byte(content), item.Filter)
+			if err != nil {
+				return "", false, err
+			}
+			content = string(merged)
+		} else {
+			// remote 或 merge 策略
+			merged, err := filter.MergeJSON(existing, []byte(content), item.Filter)
+			if err != nil {
+				return "", false, err
+			}
+			content = string(merged)
 		}
-		content = string(merged)
 	}
 
-	return content, nil
+	return content, false, nil
 }
 
 func shouldMergeProjectMCP(item config.SyncItem, localPath string) bool {
@@ -674,18 +817,52 @@ func shouldMergeProjectMCP(item config.SyncItem, localPath string) bool {
 }
 
 // writeLocalContent writes content to the local path
-func (e *Engine) writeLocalContent(item config.SyncItem, content string) error {
+func (e *Engine) writeLocalContent(item config.SyncItem, content string, prepared bool) error {
 	localPath, err := config.ExpandPath(item.LocalPath)
 	if err != nil {
 		return err
 	}
 
+	if prepared {
+		if item.Type == "directory" {
+			return archive.UnpackDirectory(content, localPath)
+		}
+		// Ensure parent directory exists
+		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+			return err
+		}
+		return os.WriteFile(localPath, []byte(content), 0644)
+	}
+
+	strategy := e.GetMergeStrategy()
+
 	if item.Type == "directory" {
+		if strategy == "local" {
+			return nil
+		}
 		return archive.UnpackDirectory(content, localPath)
 	}
 
-	// For files with filters, we need to merge
-	if item.Filter != nil {
+	// 对 claude-json 特殊处理：先过滤字段，再合并 MCP 配置
+	if item.Name == "claude-json" || filepath.Base(localPath) == ".claude.json" {
+		// 先应用 filter 过滤不需要的字段（修复：防止远端手动添加的字段被写回本地）
+		if item.Filter != nil {
+			filtered, err := filter.FilterJSON([]byte(content), item.Filter)
+			if err == nil {
+				content = string(filtered)
+			}
+		}
+
+		existing, err := os.ReadFile(localPath)
+		if err == nil && len(existing) > 0 {
+			// 根据策略处理
+			merged, _, err := mcp.MergeMCPOnPullWithStrategy(existing, []byte(content), strategy, e.autoYes)
+			if err == nil {
+				content = string(merged)
+			}
+		}
+	} else if item.Filter != nil {
+		// For other files with filters, we need to merge
 		filtered, err := filter.FilterJSON([]byte(content), item.Filter)
 		if err != nil {
 			return err
@@ -694,12 +871,40 @@ func (e *Engine) writeLocalContent(item config.SyncItem, content string) error {
 
 		existing, err := os.ReadFile(localPath)
 		if err == nil {
-			merged, err := filter.MergeJSON(existing, []byte(content), item.Filter)
-			if err != nil {
-				return err
+			// 根据策略处理
+			if strategy == "remote" {
+				// 使用远端，但保留本地未同步的字段
+				merged, err := filter.MergeJSON(existing, []byte(content), item.Filter)
+				if err != nil {
+					return err
+				}
+				content = string(merged)
+			} else if strategy == "local" {
+				// 保留本地，只添加远端新增的字段
+				merged, err := filter.MergeJSONKeepLocal(existing, []byte(content), item.Filter)
+				if err != nil {
+					return err
+				}
+				content = string(merged)
+			} else {
+				// 智能合并
+				merged, err := filter.MergeJSON(existing, []byte(content), item.Filter)
+				if err != nil {
+					return err
+				}
+				content = string(merged)
 			}
-			content = string(merged)
 		}
+	} else {
+		// 对于非过滤文件，根据策略决定是否保留本地（修复：--keep-local 对非过滤文件生效）
+		if strategy == "local" {
+			existing, err := os.ReadFile(localPath)
+			if err == nil && len(existing) > 0 {
+				// 保留本地：直接返回，不写入
+				return nil
+			}
+		}
+		// 使用远端或智能合并：继续写入
 	}
 
 	// Ensure parent directory exists
@@ -784,6 +989,7 @@ func (e *Engine) PullWithHooksStrategy(dryRun bool, force bool, hooksStrategy st
 
 	var results []ItemStatus
 	appliedAny := false
+	keptLocal := make(map[string]string)
 
 	for _, status := range statuses {
 		item := e.findItem(status.Name)
@@ -855,13 +1061,23 @@ func (e *Engine) PullWithHooksStrategy(dryRun bool, force bool, hooksStrategy st
 					continue
 				}
 
-				if err := e.writeLocalContent(*item, content); err != nil {
+				preparedContent, skipWrite, err := e.prepareWriteContent(*item, content)
+				if err != nil {
 					status.Error = err
 					status.Status = StatusError
 					results = append(results, status)
 					continue
 				}
-				appliedAny = true
+
+				if !skipWrite {
+					if err := e.writeLocalContent(*item, preparedContent, true); err != nil {
+						status.Error = err
+						status.Status = StatusError
+						results = append(results, status)
+						continue
+					}
+					appliedAny = true
+				}
 
 				localHash, err := e.calculateLocalHash(*item)
 				if err != nil {
@@ -873,7 +1089,12 @@ func (e *Engine) PullWithHooksStrategy(dryRun bool, force bool, hooksStrategy st
 				status.LocalHash = localHash
 			}
 
-			status.Status = StatusSynced
+			if e.GetMergeStrategy() == "local" && status.LocalHash != status.RemoteHash {
+				status.Status = StatusLocalAhead
+				keptLocal[status.Name] = status.RemoteHash
+			} else {
+				status.Status = StatusSynced
+			}
 			results = append(results, status)
 		}
 	}
@@ -890,10 +1111,20 @@ func (e *Engine) PullWithHooksStrategy(dryRun bool, force bool, hooksStrategy st
 				}
 			}
 		}
+		for name, remoteHash := range keptLocal {
+			e.state.Items[name] = config.ItemState{
+				LocalHash:  remoteHash,
+				RemoteHash: remoteHash,
+				LastSync:   &now,
+			}
+		}
 		e.state.LastSync = &now
-		if appliedAny {
+
+		// 始终同步本地 version 到远端 version（修复：即使内容没变也要同步 version）
+		if info.effectiveRemoteVersion > e.state.Version {
 			e.state.Version = info.effectiveRemoteVersion
 		}
+
 		if err := e.state.Save(); err != nil {
 			return nil, fmt.Errorf("failed to save state: %w", err)
 		}

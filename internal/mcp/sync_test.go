@@ -82,3 +82,61 @@ func TestMergeProjectMCPServersIntoGlobalNoChange(t *testing.T) {
 		t.Fatalf("merged = %s, want original input", string(merged))
 	}
 }
+
+func TestMergeMCPOnPullWithStrategyRemotePreservesLocalFields(t *testing.T) {
+	local := []byte(`{
+  "model": "local",
+  "other": "keep",
+  "mcpServers": {
+    "local": {"url": "https://local"},
+    "keep": {"url": "https://keep"}
+  },
+  "projects": {
+    "/work/a": {
+      "mcpServers": {
+        "project": {"url": "https://project"}
+      }
+    }
+  }
+}`)
+	remote := []byte(`{
+  "model": "remote",
+  "mcp": {"enabled": true},
+  "mcpServers": {
+    "local": {"url": "https://remote"}
+  }
+}`)
+
+	merged, _, err := MergeMCPOnPullWithStrategy(local, remote, "remote", true)
+	if err != nil {
+		t.Fatalf("MergeMCPOnPullWithStrategy: %v", err)
+	}
+
+	var prefs map[string]interface{}
+	if err := json.Unmarshal(merged, &prefs); err != nil {
+		t.Fatalf("unmarshal merged: %v", err)
+	}
+
+	if prefs["model"] != "remote" {
+		t.Fatalf("model = %v, want remote", prefs["model"])
+	}
+	if prefs["other"] != "keep" {
+		t.Fatalf("other = %v, want keep", prefs["other"])
+	}
+	if prefs["mcp"] == nil {
+		t.Fatalf("mcp missing after merge")
+	}
+
+	servers, _ := prefs["mcpServers"].(map[string]interface{})
+	if servers == nil || servers["local"] == nil {
+		t.Fatalf("mcpServers.local missing after merge: %v", servers)
+	}
+	if _, exists := servers["keep"]; exists {
+		t.Fatalf("mcpServers.keep should be removed on remote strategy: %v", servers)
+	}
+
+	projects, _ := prefs["projects"].(map[string]interface{})
+	if projects == nil || projects["/work/a"] == nil {
+		t.Fatalf("projects should be preserved: %v", projects)
+	}
+}
