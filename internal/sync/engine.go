@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/user/claude-sync/internal/archive"
-	"github.com/user/claude-sync/internal/config"
-	"github.com/user/claude-sync/internal/filter"
-	"github.com/user/claude-sync/internal/gist"
+	"github.com/user/claude_sync/internal/archive"
+	"github.com/user/claude_sync/internal/config"
+	"github.com/user/claude_sync/internal/filter"
+	"github.com/user/claude_sync/internal/gist"
 )
 
 // SyncStatus represents the status of a sync item
@@ -122,6 +122,11 @@ func (e *Engine) getItemStatus(item config.SyncItem, remoteGist *gist.Gist) Item
 			status.Status = StatusConflict
 		}
 	} else {
+		if localHash == "" && lastState.LocalHash != "" {
+			status.Status = StatusRemoteAhead
+			return status
+		}
+
 		// Check what changed since last sync
 		localChanged := localHash != lastState.LocalHash
 		remoteChanged := remoteHash != lastState.RemoteHash
@@ -166,6 +171,9 @@ func (e *Engine) calculateLocalHash(item config.SyncItem) (string, error) {
 		}
 		return "", err
 	}
+	if len(data) == 0 {
+		return "", nil
+	}
 
 	// Apply filter if configured
 	if item.Filter != nil {
@@ -173,6 +181,9 @@ func (e *Engine) calculateLocalHash(item config.SyncItem) (string, error) {
 		if err != nil {
 			return "", err
 		}
+	}
+	if len(data) == 0 {
+		return "", nil
 	}
 
 	return calculateHash(string(data)), nil
@@ -216,10 +227,14 @@ func (e *Engine) Push(dryRun bool, force bool) ([]ItemStatus, error) {
 		}
 
 		if shouldPush {
-			content, err := e.getLocalContent(*item)
+			content, skip, err := e.getLocalContent(*item)
 			if err != nil {
 				status.Error = err
 				status.Status = StatusError
+				results = append(results, status)
+				continue
+			}
+			if skip {
 				results = append(results, status)
 				continue
 			}
@@ -305,12 +320,25 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 			}
 
 			if !dryRun {
+				if remoteFile.Content == "" && item.Type != "directory" {
+					results = append(results, status)
+					continue
+				}
 				if err := e.writeLocalContent(*item, remoteFile.Content); err != nil {
 					status.Error = err
 					status.Status = StatusError
 					results = append(results, status)
 					continue
 				}
+
+				localHash, err := e.calculateLocalHash(*item)
+				if err != nil {
+					status.Error = err
+					status.Status = StatusError
+					results = append(results, status)
+					continue
+				}
+				status.LocalHash = localHash
 			}
 
 			status.Status = StatusSynced
@@ -324,7 +352,7 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 		for _, status := range results {
 			if status.Status == StatusSynced && status.RemoteHash != "" {
 				e.state.Items[status.Name] = config.ItemState{
-					LocalHash:  status.RemoteHash, // After pull, local = remote
+					LocalHash:  status.LocalHash,
 					RemoteHash: status.RemoteHash,
 					LastSync:   &now,
 				}
@@ -340,30 +368,46 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 }
 
 // getLocalContent reads the local content for an item
-func (e *Engine) getLocalContent(item config.SyncItem) (string, error) {
+func (e *Engine) getLocalContent(item config.SyncItem) (string, bool, error) {
 	localPath, err := config.ExpandPath(item.LocalPath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	if item.Type == "directory" {
-		return archive.PackDirectory(localPath)
+		content, err := archive.PackDirectory(localPath)
+		if err != nil {
+			return "", false, err
+		}
+		if content == "" {
+			return "", true, nil
+		}
+		return content, false, nil
 	}
 
 	data, err := os.ReadFile(localPath)
 	if err != nil {
-		return "", err
+		if os.IsNotExist(err) {
+			return "", true, nil
+		}
+		return "", false, err
+	}
+	if len(data) == 0 {
+		return "", true, nil
 	}
 
 	// Apply filter if configured
 	if item.Filter != nil {
 		data, err = filter.FilterJSON(data, item.Filter)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 	}
+	if len(data) == 0 {
+		return "", true, nil
+	}
 
-	return string(data), nil
+	return string(data), false, nil
 }
 
 // writeLocalContent writes content to the local path
@@ -379,6 +423,12 @@ func (e *Engine) writeLocalContent(item config.SyncItem, content string) error {
 
 	// For files with filters, we need to merge
 	if item.Filter != nil {
+		filtered, err := filter.FilterJSON([]byte(content), item.Filter)
+		if err != nil {
+			return err
+		}
+		content = string(filtered)
+
 		existing, err := os.ReadFile(localPath)
 		if err == nil {
 			merged, err := filter.MergeJSON(existing, []byte(content), item.Filter)
@@ -537,12 +587,26 @@ func (e *Engine) PullWithHooksStrategy(dryRun bool, force bool, hooksStrategy st
 					}
 				}
 
-				if err := e.writeLocalContentRaw(*item, content); err != nil {
+				if content == "" && item.Type != "directory" {
+					results = append(results, status)
+					continue
+				}
+
+				if err := e.writeLocalContent(*item, content); err != nil {
 					status.Error = err
 					status.Status = StatusError
 					results = append(results, status)
 					continue
 				}
+
+				localHash, err := e.calculateLocalHash(*item)
+				if err != nil {
+					status.Error = err
+					status.Status = StatusError
+					results = append(results, status)
+					continue
+				}
+				status.LocalHash = localHash
 			}
 
 			status.Status = StatusSynced
@@ -556,7 +620,7 @@ func (e *Engine) PullWithHooksStrategy(dryRun bool, force bool, hooksStrategy st
 		for _, status := range results {
 			if status.Status == StatusSynced && status.RemoteHash != "" {
 				e.state.Items[status.Name] = config.ItemState{
-					LocalHash:  status.RemoteHash,
+					LocalHash:  status.LocalHash,
 					RemoteHash: status.RemoteHash,
 					LastSync:   &now,
 				}
@@ -601,23 +665,4 @@ func (e *Engine) mergeKeepLocalHooks(local, remote []byte) (string, error) {
 	}
 
 	return string(result), nil
-}
-
-// writeLocalContentRaw 直接写入内容（不应用过滤器）
-func (e *Engine) writeLocalContentRaw(item config.SyncItem, content string) error {
-	localPath, err := config.ExpandPath(item.LocalPath)
-	if err != nil {
-		return err
-	}
-
-	if item.Type == "directory" {
-		return archive.UnpackDirectory(content, localPath)
-	}
-
-	// Ensure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
-		return err
-	}
-
-	return os.WriteFile(localPath, []byte(content), 0644)
 }

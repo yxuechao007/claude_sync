@@ -151,12 +151,7 @@ func (c *Client) Get(gistID string) (*Gist, error) {
 func (c *Client) Update(gistID string, files map[string]string) (*Gist, error) {
 	gistFiles := make(map[string]GistFile)
 	for name, content := range files {
-		if content == "" {
-			// Empty content means delete the file
-			gistFiles[name] = GistFile{}
-		} else {
-			gistFiles[name] = GistFile{Content: content}
-		}
+		gistFiles[name] = GistFile{Content: content}
 	}
 
 	reqBody := UpdateGistRequest{

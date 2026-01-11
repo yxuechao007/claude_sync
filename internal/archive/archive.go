@@ -154,7 +154,10 @@ func UnpackDirectory(encoded string, dirPath string) error {
 		targetPath := filepath.Join(dirPath, header.Name)
 
 		// Security check: ensure path is within target directory
-		if !strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(dirPath)) {
+		cleanDir := filepath.Clean(dirPath)
+		cleanTarget := filepath.Clean(targetPath)
+		rel, err := filepath.Rel(cleanDir, cleanTarget)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			return fmt.Errorf("invalid file path in archive: %s", header.Name)
 		}
 
