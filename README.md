@@ -293,7 +293,12 @@ Pull 时会显示文件差异并等待确认：
 
 ## 发布新版本
 
-每次 push 到 `main` 会自动构建并发布到 GitHub Releases（Release 产物来自 `bin/` 目录）：
+创建 tag 后会自动构建并发布到 GitHub Releases（Release 产物来自 `bin/` 目录）：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 支持的平台：
 - Linux (amd64, arm64)
