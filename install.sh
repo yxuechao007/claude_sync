@@ -4,7 +4,7 @@ set -euf
 (set -o pipefail) 2>/dev/null && set -o pipefail
 
 REPO="yxuechao007/claude_sync"
-BIN_NAME="claude-sync"
+BIN_NAME="claude_sync"
 VERSION="latest"
 INSTALL_DIR="/usr/local/bin"
 

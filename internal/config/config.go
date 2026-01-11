@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	ConfigDir  = ".claude-sync"
+	ConfigDir  = ".claude_sync"
 	ConfigFile = "config.json"
 	StateFile  = "state.json"
 	RepoURL    = "https://github.com/yxuechao007/claude_sync"
@@ -92,7 +92,7 @@ func Load() (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("config not found, run 'claude-sync init' first")
+			return nil, fmt.Errorf("config not found, run 'claude_sync init' first")
 		}
 		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
@@ -318,5 +318,5 @@ func (c *Config) GetGitHubToken() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("GitHub token not found. Run 'claude-sync init' to set up authentication")
+	return "", fmt.Errorf("GitHub token not found. Run 'claude_sync init' to set up authentication")
 }

@@ -37,7 +37,7 @@ func main() {
 	case "mcp-apply":
 		cmdMCPApply(os.Args[2:])
 	case "version":
-		fmt.Printf("claude-sync version %s\n", version)
+		fmt.Printf("claude_sync version %s\n", version)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -48,10 +48,10 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println(`claude-sync - Claude Code Configuration Sync Tool
+	fmt.Println(`claude_sync - Claude Code Configuration Sync Tool
 
 Usage:
-  claude-sync <command> [options]
+  claude_sync <command> [options]
 
 Commands:
   init       Initialize sync with a GitHub Gist
@@ -67,15 +67,15 @@ Options (pull/mcp-apply only):
   -y, --yes  Auto-confirm all changes (skip diff confirmation)
 
 Examples:
-  claude-sync init --token ghp_xxxx
-  claude-sync push
-  claude-sync pull --force
-  claude-sync pull -y              # Auto-confirm all changes
-  claude-sync mcp-apply            # Apply MCP to current project
-  claude-sync mcp-apply --overwrite
-  claude-sync status
+  claude_sync init --token ghp_xxxx
+  claude_sync push
+  claude_sync pull --force
+  claude_sync pull -y              # Auto-confirm all changes
+  claude_sync mcp-apply            # Apply MCP to current project
+  claude_sync mcp-apply --overwrite
+  claude_sync status
 
-Run 'claude-sync <command> -h' for more information on a command.`)
+Run 'claude_sync <command> -h' for more information on a command.`)
 }
 
 func cmdInit(args []string) {
@@ -85,7 +85,7 @@ func cmdInit(args []string) {
 	fs.Parse(args)
 
 	fmt.Println("╔══════════════════════════════════════════════════════════╗")
-	fmt.Println("║       claude-sync - Claude Code 配置同步工具             ║")
+	fmt.Println("║       claude_sync - Claude Code 配置同步工具             ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 
 	// Get token - 优先级: 命令行参数 > 环境变量 > 已保存 > 交互式获取
@@ -127,7 +127,7 @@ func cmdInit(args []string) {
 		finalGistID = *gistID
 		fmt.Printf("使用已有 Gist: %s\n", finalGistID)
 	} else {
-		// Try to find an existing claude-sync gist
+		// Try to find an existing claude_sync gist
 		fmt.Print("\n查找已有 Gist... ")
 		existingID, err := findClaudeSyncGist(client)
 		if err != nil {
@@ -156,7 +156,7 @@ func cmdInit(args []string) {
 				"claude_sync",
 				false, // private
 				map[string]string{
-					"claude-sync.meta.json": string(metaContent),
+					"claude_sync.meta.json": string(metaContent),
 				},
 			)
 			if err != nil {
@@ -183,11 +183,11 @@ func cmdInit(args []string) {
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
 	fmt.Println("下一步:")
-	fmt.Println("  1. 运行 'claude-sync push' 上传当前配置")
+	fmt.Println("  1. 运行 'claude_sync push' 上传当前配置")
 	fmt.Println()
 	fmt.Println("在其他设备上:")
-	fmt.Println("  1. 运行 'claude-sync init --gist-id " + finalGistID + "'")
-	fmt.Println("  2. 运行 'claude-sync pull' 拉取配置")
+	fmt.Println("  1. 运行 'claude_sync init --gist-id " + finalGistID + "'")
+	fmt.Println("  2. 运行 'claude_sync pull' 拉取配置")
 }
 
 func findClaudeSyncGist(client *gist.Client) (string, error) {
@@ -207,7 +207,7 @@ func findClaudeSyncGist(client *gist.Client) (string, error) {
 			if g.Files == nil {
 				continue
 			}
-			if _, ok := g.Files["claude-sync.meta.json"]; !ok {
+			if _, ok := g.Files["claude_sync.meta.json"]; !ok {
 				continue
 			}
 
@@ -215,7 +215,7 @@ func findClaudeSyncGist(client *gist.Client) (string, error) {
 			if err != nil {
 				continue
 			}
-			metaFile, ok := full.Files["claude-sync.meta.json"]
+			metaFile, ok := full.Files["claude_sync.meta.json"]
 			if !ok {
 				continue
 			}
@@ -430,8 +430,8 @@ func cmdMCPApply(args []string) {
 	fs.Parse(args)
 
 	opts := mcp.SyncOptions{
-		AutoYes:  *autoYes || *autoYesLong,
-		Silent:   *silent || *silentLong,
+		AutoYes:   *autoYes || *autoYesLong,
+		Silent:    *silent || *silentLong,
 		Overwrite: *overwrite,
 	}
 

@@ -39,25 +39,26 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          output_name="claude-sync"
+          output_name="claude_sync"
           if [ "$GOOS" = "windows" ]; then
             output_name="${output_name}.exe"
           fi
-          go build -ldflags="-s -w" -o "$output_name" ./cmd
+          mkdir -p bin
+          go build -ldflags="-s -w" -o "bin/${output_name}" ./cmd
 
       - name: Package
         run: |
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip claude-sync_${{ matrix.goos }}_${{ matrix.goarch }}.zip claude-sync.exe
+            zip claude_sync_${{ matrix.goos }}_${{ matrix.goarch }}.zip bin/claude_sync.exe
           else
-            tar -czvf claude-sync_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz claude-sync
+            tar -czvf claude_sync_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz -C bin claude_sync
           fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: claude-sync_${{ matrix.goos }}_${{ matrix.goarch }}
-          path: claude-sync_${{ matrix.goos }}_${{ matrix.goarch }}.*
+          name: claude_sync_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: claude_sync_${{ matrix.goos }}_${{ matrix.goarch }}.*
 
   release:
     needs: build
@@ -79,6 +80,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: main-${{ github.run_number }}
+          name: main-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
           files: release/*
           generate_release_notes: true
         env:

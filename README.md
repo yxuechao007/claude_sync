@@ -1,4 +1,4 @@
-# claude-sync
+# claude_sync
 
 Claude Code 配置同步工具，基于 GitHub Gist 在多设备间同步配置文件和目录。
 
@@ -27,8 +27,8 @@ curl -sSL https://raw.githubusercontent.com/yxuechao007/claude_sync/main/install
 ### 从源码安装
 
 ```bash
-go build -o claude-sync ./cmd
-mv claude-sync /usr/local/bin/
+go build -o claude_sync ./cmd
+mv claude_sync /usr/local/bin/
 ```
 
 ## 使用
@@ -38,9 +38,9 @@ mv claude-sync /usr/local/bin/
 创建新的 Gist 或绑定已有 Gist：
 
 ```bash
-claude-sync init                    # 自动复用 claude_sync Gist，找不到则创建
-claude-sync init --token ghp_xxxx   # 使用 token
-claude-sync init --gist-id <id>     # 绑定已有 Gist
+claude_sync init                    # 自动复用 claude_sync Gist，找不到则创建
+claude_sync init --token ghp_xxxx   # 使用 token
+claude_sync init --gist-id <id>     # 绑定已有 Gist
 ```
 
 认证方式：
@@ -54,7 +54,7 @@ Device Flow 提示：
 - 会自动打开带 `user_code` 的链接（支持直接预填）。
 - 可用环境变量指定 OAuth App Client ID：`CLAUDE_SYNC_GITHUB_CLIENT_ID`（或 `GITHUB_OAUTH_CLIENT_ID`、`GITHUB_CLIENT_ID`）。
 
-init 会在你的账号下查找包含 `claude-sync.meta.json` 且 `repo` 字段为 `https://github.com/yxuechao007/claude_sync` 的 Gist；找到就复用，找不到才创建新的。init 不会推送任何配置。
+init 会在你的账号下查找包含 `claude_sync.meta.json` 且 `repo` 字段为 `https://github.com/yxuechao007/claude_sync` 的 Gist；找到就复用，找不到才创建新的。init 不会推送任何配置。
 
 ## 子命令使用场景
 - `init`：初次使用或新设备接入现有 gist；创建/绑定 gist
@@ -69,17 +69,17 @@ init 会在你的账号下查找包含 `claude-sync.meta.json` 且 `repo` 字段
 
 ```bash
 # 推送本地配置到 Gist
-claude-sync push
-claude-sync push --dry-run          # 预览变更
-claude-sync push --force            # 强制推送（覆盖冲突）
+claude_sync push
+claude_sync push --dry-run          # 预览变更
+claude_sync push --force            # 强制推送（覆盖冲突）
 
 # 拉取 Gist 配置到本地
-claude-sync pull                    # 显示 diff 并确认
-claude-sync pull -y                 # 自动确认所有修改
-claude-sync pull --force            # 强制拉取（覆盖冲突）
-claude-sync pull --keep-hooks       # 保留本地 hooks
-claude-sync pull --apply-mcp        # 同时同步 MCP 到当前项目
-claude-sync pull --apply-mcp --apply-mcp-overwrite
+claude_sync pull                    # 显示 diff 并确认
+claude_sync pull -y                 # 自动确认所有修改
+claude_sync pull --force            # 强制拉取（覆盖冲突）
+claude_sync pull --keep-hooks       # 保留本地 hooks
+claude_sync pull --apply-mcp        # 同时同步 MCP 到当前项目
+claude_sync pull --apply-mcp --apply-mcp-overwrite
 ```
 
 ### MCP 项目同步
@@ -87,9 +87,9 @@ claude-sync pull --apply-mcp --apply-mcp-overwrite
 将全局 MCP 配置同步到当前项目（解决每次新建项目都要复制 MCP 配置的问题）：
 
 ```bash
-claude-sync mcp-apply               # 同步 MCP 到当前项目
-claude-sync mcp-apply -y            # 自动确认
-claude-sync mcp-apply --overwrite   # 覆盖项目 MCP（默认是合并）
+claude_sync mcp-apply               # 同步 MCP 到当前项目
+claude_sync mcp-apply -y            # 自动确认
+claude_sync mcp-apply --overwrite   # 覆盖项目 MCP（默认是合并）
 ```
 
 默认行为会保留项目已有的 `mcpServers` 配置，仅补充全局缺失项；如需完全覆盖请使用 `--overwrite`。
@@ -97,10 +97,10 @@ claude-sync mcp-apply --overwrite   # 覆盖项目 MCP（默认是合并）
 ### 状态与配置
 
 ```bash
-claude-sync status                  # 查看同步状态
-claude-sync config --list           # 查看同步项配置
-claude-sync version                 # 查看版本
-claude-sync help                    # 帮助信息
+claude_sync status                  # 查看同步状态
+claude_sync config --list           # 查看同步项配置
+claude_sync version                 # 查看版本
+claude_sync help                    # 帮助信息
 ```
 
 ## 同步内容详解
@@ -112,7 +112,7 @@ claude-sync help                    # 帮助信息
 ### 配置目录
 
 ```
-~/.claude-sync/
+~/.claude_sync/
 ├── config.json   # 同步配置
 ├── state.json    # 同步状态（hash 记录）
 └── token         # GitHub Token
@@ -132,7 +132,7 @@ claude-sync help                    # 帮助信息
 
 *claude-json（即 `~/.claude.json`）只同步字段：`mcp`, `mcpServers`, `model`, `autoUpdates`, `showExpandedTodos`, `thinkingMigrationComplete`
 
-> **注意**：`plans` 和 `todos` 默认禁用，因为它们是会话相关的临时文件，文件量大且跨设备同步意义不大。如需启用，可修改 `~/.claude-sync/config.json`。
+> **注意**：`plans` 和 `todos` 默认禁用，因为它们是会话相关的临时文件，文件量大且跨设备同步意义不大。如需启用，可修改 `~/.claude_sync/config.json`。
 
 ### 不同步的内容
 
@@ -258,7 +258,7 @@ Pull 时会显示文件差异并等待确认：
         "hooks": [
           {
             "type": "command",
-            "command": "claude-sync mcp-apply -y 2>/dev/null || true"
+            "command": "claude_sync mcp-apply -y 2>/dev/null || true"
           }
         ]
       }
@@ -271,8 +271,8 @@ Pull 时会显示文件差异并等待确认：
 
 - `SessionStart`：Claude Code 会话启动时触发
 - `matcher: "startup"`：仅在新启动时触发（不包括 resume/continue）
-- `claude-sync mcp-apply -y`：自动确认同步 MCP 配置
-- `claude-sync mcp-apply --overwrite`：覆盖项目 MCP（不合并）
+- `claude_sync mcp-apply -y`：自动确认同步 MCP 配置
+- `claude_sync mcp-apply --overwrite`：覆盖项目 MCP（不合并）
 - `2>/dev/null || true`：静默执行，即使失败也不影响 Claude Code 启动
 
 ### 效果
@@ -293,12 +293,7 @@ Pull 时会显示文件差异并等待确认：
 
 ## 发布新版本
 
-创建 tag 后会自动构建并发布到 GitHub Releases：
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+每次 push 到 `main` 会自动构建并发布到 GitHub Releases（Release 产物来自 `bin/` 目录）：
 
 支持的平台：
 - Linux (amd64, arm64)
@@ -309,7 +304,7 @@ git push origin v1.0.0
 
 - 本地缺失文件或空文件不会删除远端文件
 - 目录同步不会包含隐藏文件/目录
-- MCP 版本信息保存在 gist 的 `claude-sync.meta.json` 中
+- MCP 版本信息保存在 gist 的 `claude_sync.meta.json` 中
 - 新初始化时 `plans` 和 `todos` 默认禁用，现有用户需手动修改配置
 
 ## License

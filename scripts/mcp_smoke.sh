@@ -5,7 +5,7 @@ set -euf
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp_dir="$(mktemp -d)"
-bin_path="${tmp_dir}/claude-sync"
+bin_path="${tmp_dir}/claude_sync"
 home_dir="${tmp_dir}/home"
 project_dir="${tmp_dir}/project-a"
 go_cache="${tmp_dir}/gocache"

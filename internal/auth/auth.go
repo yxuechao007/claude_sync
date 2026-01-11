@@ -106,7 +106,7 @@ func manualTokenInput() (string, error) {
 	// 询问是否保存
 	fmt.Println()
 	fmt.Println("如何保存 token?")
-	fmt.Println("  [1] 保存到 ~/.claude-sync/config.json (仅本工具使用)")
+	fmt.Println("  [1] 保存到 ~/.claude_sync/config.json (仅本工具使用)")
 	fmt.Println("  [2] 设置环境变量 GITHUB_TOKEN (其他工具也可使用)")
 	fmt.Println("  [3] 不保存 (每次手动输入)")
 	fmt.Print("\n请选择 [1/2/3]: ")
@@ -140,7 +140,7 @@ func validateToken(token string) error {
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "claude-sync")
+	req.Header.Set("User-Agent", "claude_sync")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -174,7 +174,7 @@ func saveTokenToConfig(token string) error {
 		return err
 	}
 
-	configDir := home + "/.claude-sync"
+	configDir := home + "/.claude_sync"
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return err
 	}
@@ -190,7 +190,7 @@ func LoadSavedToken() (string, error) {
 		return "", err
 	}
 
-	tokenFile := home + "/.claude-sync/token"
+	tokenFile := home + "/.claude_sync/token"
 	data, err := os.ReadFile(tokenFile)
 	if err != nil {
 		return "", err
@@ -256,7 +256,7 @@ func pollForToken(clientID, deviceCode string) (string, error) {
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "claude-sync")
+	req.Header.Set("User-Agent", "claude_sync")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -310,7 +310,7 @@ func requestDeviceCode(clientID string) (*DeviceCodeResponse, error) {
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "claude-sync")
+	req.Header.Set("User-Agent", "claude_sync")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -422,7 +422,7 @@ func deviceFlowAuth(clientID string, saveToken bool) (string, error) {
 				if err := saveTokenToConfig(token); err != nil {
 					fmt.Printf("保存 token 失败: %v\n", err)
 				} else {
-					fmt.Println("Token 已保存到 ~/.claude-sync/token")
+					fmt.Println("Token 已保存到 ~/.claude_sync/token")
 				}
 			}
 

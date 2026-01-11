@@ -13,12 +13,12 @@ import (
 	"github.com/yxuechao007/claude_sync/internal/config"
 )
 
-const mcpMetaFile = "claude-sync.meta.json"
+const mcpMetaFile = "claude_sync.meta.json"
 
 var mcpKeys = []string{"mcp", "mcpServers"}
 
 type mcpMeta struct {
-	Version int `json:"version"`
+	Version int    `json:"version"`
 	Repo    string `json:"repo,omitempty"`
 }
 
