@@ -3,10 +3,10 @@ set -euf
 
 (set -o pipefail) 2>/dev/null && set -o pipefail
 
-REPO="${CLAUDE_SYNC_REPO:-yxuechao007/claude_sync}"
-BIN_NAME="${CLAUDE_SYNC_BIN_NAME:-claude-sync}"
-VERSION="${CLAUDE_SYNC_VERSION:-latest}"
-INSTALL_DIR="${CLAUDE_SYNC_INSTALL_DIR:-/usr/local/bin}"
+REPO="yxuechao007/claude_sync"
+BIN_NAME="claude-sync"
+VERSION="latest"
+INSTALL_DIR="/usr/local/bin"
 
 if ! command -v curl >/dev/null 2>&1; then
   echo "curl is required" >&2
@@ -56,7 +56,6 @@ fi
 
 if [ -z "${asset_url:-}" ]; then
   echo "no release asset found for ${os}/${arch}" >&2
-  echo "set CLAUDE_SYNC_REPO or CLAUDE_SYNC_VERSION to match your release assets" >&2
   exit 1
 fi
 

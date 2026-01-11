@@ -22,10 +22,7 @@ Claude Code 配置同步工具，基于 GitHub Gist 在多设备间同步配置�
 curl -sSL https://raw.githubusercontent.com/yxuechao007/claude_sync/main/install.sh | sh
 ```
 
-可选环境变量：
-- `CLAUDE_SYNC_REPO`：GitHub 仓库（默认 `yxuechao007/claude_sync`）
-- `CLAUDE_SYNC_VERSION`：版本号（默认 `latest`）
-- `CLAUDE_SYNC_INSTALL_DIR`：安装目录（默认 `/usr/local/bin`）
+脚本会下载 GitHub Release 的最新二进制并安装到 `/usr/local/bin`。
 
 ### 从源码安装
 
