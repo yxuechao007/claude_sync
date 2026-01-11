@@ -14,6 +14,7 @@ import (
 	"github.com/yxuechao007/claude_sync/internal/diff"
 	"github.com/yxuechao007/claude_sync/internal/filter"
 	"github.com/yxuechao007/claude_sync/internal/gist"
+	"github.com/yxuechao007/claude_sync/internal/mcp"
 )
 
 // SyncStatus represents the status of a sync item
@@ -180,6 +181,16 @@ func (e *Engine) calculateLocalHash(item config.SyncItem) (string, error) {
 	}
 	if len(data) == 0 {
 		return "", nil
+	}
+
+	if shouldMergeProjectMCP(item, localPath) {
+		merged, changed, err := mcp.MergeProjectMCPServersIntoGlobal(data)
+		if err != nil {
+			return "", err
+		}
+		if changed {
+			data = merged
+		}
 	}
 
 	// Apply filter if configured
@@ -464,6 +475,16 @@ func (e *Engine) getLocalContent(item config.SyncItem) (string, bool, error) {
 		return "", true, nil
 	}
 
+	if shouldMergeProjectMCP(item, localPath) {
+		merged, changed, err := mcp.MergeProjectMCPServersIntoGlobal(data)
+		if err != nil {
+			return "", false, err
+		}
+		if changed {
+			data = merged
+		}
+	}
+
 	// Apply filter if configured
 	if item.Filter != nil {
 		data, err = filter.FilterJSON(data, item.Filter)
@@ -517,6 +538,16 @@ func (e *Engine) prepareWriteContent(item config.SyncItem, content string) (stri
 	}
 
 	return content, nil
+}
+
+func shouldMergeProjectMCP(item config.SyncItem, localPath string) bool {
+	if item.Type != "file" {
+		return false
+	}
+	if item.Name == "claude-json" {
+		return true
+	}
+	return filepath.Base(localPath) == ".claude.json"
 }
 
 // writeLocalContent writes content to the local path

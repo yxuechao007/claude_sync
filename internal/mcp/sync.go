@@ -26,8 +26,8 @@ type Project struct {
 
 // SyncOptions MCP 同步选项
 type SyncOptions struct {
-	AutoYes bool // 自动确认
-	Silent  bool // 静默模式：如果已同步则不输出任何内容
+	AutoYes   bool // 自动确认
+	Silent    bool // 静默模式：如果已同步则不输出任何内容
 	Overwrite bool // 覆盖项目 MCP 配置
 }
 
@@ -229,4 +229,53 @@ func mergeMCPServers(projectMCP, globalMCP map[string]interface{}) map[string]in
 		}
 	}
 	return merged
+}
+
+// MergeProjectMCPServersIntoGlobal merges per-project MCP servers into global MCP servers.
+// It does not modify local files; it only returns updated JSON content.
+func MergeProjectMCPServersIntoGlobal(data []byte) ([]byte, bool, error) {
+	var prefs map[string]interface{}
+	if err := json.Unmarshal(data, &prefs); err != nil {
+		return nil, false, err
+	}
+
+	globalMCP, _ := prefs["mcpServers"].(map[string]interface{})
+	if globalMCP == nil {
+		globalMCP = make(map[string]interface{})
+	}
+
+	projects, _ := prefs["projects"].(map[string]interface{})
+	if len(projects) == 0 {
+		return data, false, nil
+	}
+
+	changed := false
+	for _, project := range projects {
+		projectConfig, ok := project.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		projectMCP, _ := projectConfig["mcpServers"].(map[string]interface{})
+		if len(projectMCP) == 0 {
+			continue
+		}
+		for key, value := range projectMCP {
+			if _, exists := globalMCP[key]; !exists {
+				globalMCP[key] = value
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return data, false, nil
+	}
+
+	prefs["mcpServers"] = globalMCP
+	merged, err := json.MarshalIndent(prefs, "", "  ")
+	if err != nil {
+		return nil, false, err
+	}
+
+	return merged, true, nil
 }
