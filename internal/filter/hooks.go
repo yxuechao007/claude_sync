@@ -172,3 +172,59 @@ func containsString(slice []string, s string) bool {
 	}
 	return false
 }
+
+// FilterLocalHooks 过滤掉包含本地特定内容的 hooks（用于 push）
+// 返回过滤后的 JSON 数据和被过滤的 hook 类型列表
+func FilterLocalHooks(data []byte) ([]byte, []string, error) {
+	var obj map[string]interface{}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return data, nil, err
+	}
+
+	hooks, ok := obj["hooks"]
+	if !ok {
+		return data, nil, nil
+	}
+
+	hooksMap, ok := hooks.(map[string]interface{})
+	if !ok {
+		return data, nil, nil
+	}
+
+	var filteredTypes []string
+	filteredHooks := make(map[string]interface{})
+
+	for hookType, hookConfig := range hooksMap {
+		hookJSON, _ := json.Marshal(hookConfig)
+		hookStr := string(hookJSON)
+
+		// 检查是否包含本地特定内容
+		hasLocal := false
+		for _, pattern := range LocalPatterns {
+			if pattern.MatchString(hookStr) {
+				hasLocal = true
+				break
+			}
+		}
+
+		if hasLocal {
+			filteredTypes = append(filteredTypes, hookType)
+		} else {
+			filteredHooks[hookType] = hookConfig
+		}
+	}
+
+	// 更新 hooks
+	if len(filteredHooks) > 0 {
+		obj["hooks"] = filteredHooks
+	} else {
+		delete(obj, "hooks")
+	}
+
+	result, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return data, nil, err
+	}
+
+	return result, filteredTypes, nil
+}

@@ -193,6 +193,35 @@ func (c *Client) Delete(gistID string) error {
 	return nil
 }
 
+// List retrieves gists for the authenticated user.
+func (c *Client) List(page int, perPage int) ([]Gist, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if perPage <= 0 {
+		perPage = 30
+	}
+
+	url := fmt.Sprintf("%s/gists?page=%d&per_page=%d", apiBaseURL, page, perPage)
+	resp, err := c.doRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to list gists: %s - %s", resp.Status, string(body))
+	}
+
+	var gists []Gist
+	if err := json.NewDecoder(resp.Body).Decode(&gists); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return gists, nil
+}
+
 // GetFileContent retrieves the content of a specific file from a gist
 func (c *Client) GetFileContent(gistID, filename string) (string, error) {
 	gist, err := c.Get(gistID)

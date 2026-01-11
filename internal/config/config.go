@@ -13,6 +13,7 @@ const (
 	ConfigDir  = ".claude-sync"
 	ConfigFile = "config.json"
 	StateFile  = "state.json"
+	RepoURL    = "https://github.com/yxuechao007/claude_sync"
 )
 
 // FilterConfig defines which fields to include/exclude for JSON files
@@ -42,8 +43,9 @@ type Config struct {
 
 // SyncState tracks the state of each synced item
 type SyncState struct {
-	Items    map[string]ItemState `json:"items"`
-	LastSync *time.Time           `json:"last_sync,omitempty"`
+	Items      map[string]ItemState `json:"items"`
+	LastSync   *time.Time           `json:"last_sync,omitempty"`
+	MCPVersion int                  `json:"mcp_version,omitempty"`
 }
 
 // ItemState tracks the hash and sync time for an item
@@ -237,29 +239,30 @@ func DefaultConfig(gistID string) *Config {
 				Name:      "plans",
 				LocalPath: "~/.claude/plans",
 				GistFile:  "plans.tar.gz",
-				Enabled:   true,
+				Enabled:   false, // 默认禁用，当前会话相关
 				Type:      "directory",
 			},
 			{
 				Name:      "todos",
 				LocalPath: "~/.claude/todos",
 				GistFile:  "todos.tar.gz",
-				Enabled:   true,
+				Enabled:   false, // 默认禁用，文件量大且设备特定
 				Type:      "directory",
 			},
 			{
-				Name:      "preferences",
+				Name:      "claude-json",
 				LocalPath: "~/.claude.json",
-				GistFile:  "preferences.json",
+				GistFile:  "claude.json",
 				Enabled:   true,
 				Type:      "file",
 				Filter: &FilterConfig{
 					IncludeFields: []string{
 						"model",
 						"autoUpdates",
-						"tipsHistory",
 						"showExpandedTodos",
 						"thinkingMigrationComplete",
+						"mcp",
+						"mcpServers",
 					},
 				},
 			},

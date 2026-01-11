@@ -1,2 +1,4 @@
 bin/
 .specstory/
+.github/
+.cache/

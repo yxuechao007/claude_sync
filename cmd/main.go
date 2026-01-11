@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/yxuechao007/claude_sync/internal/auth"
 	"github.com/yxuechao007/claude_sync/internal/config"
 	"github.com/yxuechao007/claude_sync/internal/gist"
+	"github.com/yxuechao007/claude_sync/internal/mcp"
 	"github.com/yxuechao007/claude_sync/internal/sync"
 )
 
@@ -32,6 +34,8 @@ func main() {
 		cmdStatus(os.Args[2:])
 	case "config":
 		cmdConfig(os.Args[2:])
+	case "mcp-apply":
+		cmdMCPApply(os.Args[2:])
 	case "version":
 		fmt.Printf("claude-sync version %s\n", version)
 	case "help", "-h", "--help":
@@ -50,18 +54,25 @@ Usage:
   claude-sync <command> [options]
 
 Commands:
-  init      Initialize sync with a GitHub Gist
-  push      Push local configuration to Gist
-  pull      Pull configuration from Gist to local
-  status    Show sync status for all items
-  config    Manage sync configuration
-  version   Show version information
-  help      Show this help message
+  init       Initialize sync with a GitHub Gist
+  push       Push local configuration to Gist
+  pull       Pull configuration from Gist to local
+  status     Show sync status for all items
+  config     Manage sync configuration
+  mcp-apply  Apply global MCP config to current project
+  version    Show version information
+  help       Show this help message
+
+Options (pull/mcp-apply only):
+  -y, --yes  Auto-confirm all changes (skip diff confirmation)
 
 Examples:
   claude-sync init --token ghp_xxxx
   claude-sync push
   claude-sync pull --force
+  claude-sync pull -y              # Auto-confirm all changes
+  claude-sync mcp-apply            # Apply MCP to current project
+  claude-sync mcp-apply --overwrite
   claude-sync status
 
 Run 'claude-sync <command> -h' for more information on a command.`)
@@ -116,23 +127,47 @@ func cmdInit(args []string) {
 		finalGistID = *gistID
 		fmt.Printf("使用已有 Gist: %s\n", finalGistID)
 	} else {
-		// Create new gist
-		fmt.Print("\n创建私有 Gist... ")
-		newGist, err := client.Create(
-			"Claude Code Configuration Sync",
-			false, // private
-			map[string]string{
-				"README.md": "# Claude Code Configuration\n\nThis gist is used for syncing Claude Code configuration across devices.\nManaged by claude-sync tool.",
-			},
-		)
+		// Try to find an existing claude-sync gist
+		fmt.Print("\n查找已有 Gist... ")
+		existingID, err := findClaudeSyncGist(client)
 		if err != nil {
 			fmt.Println("❌ 失败")
-			fmt.Printf("Error: Failed to create gist: %v\n", err)
+			fmt.Printf("Error: Failed to list gists: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("✓")
-		finalGistID = newGist.ID
-		fmt.Printf("Gist URL: %s\n", newGist.HTMLURL)
+		if existingID != "" {
+			fmt.Println("✓")
+			finalGistID = existingID
+			fmt.Printf("使用已有 Gist: %s\n", finalGistID)
+		} else {
+			fmt.Println("未找到，创建新的 Gist")
+			fmt.Print("创建私有 Gist... ")
+			metaContent, err := json.MarshalIndent(map[string]interface{}{
+				"version": 0,
+				"repo":    config.RepoURL,
+			}, "", "  ")
+			if err != nil {
+				fmt.Println("❌ 失败")
+				fmt.Printf("Error: Failed to create meta content: %v\n", err)
+				os.Exit(1)
+			}
+
+			newGist, err := client.Create(
+				"claude_sync",
+				false, // private
+				map[string]string{
+					"claude-sync.meta.json": string(metaContent),
+				},
+			)
+			if err != nil {
+				fmt.Println("❌ 失败")
+				fmt.Printf("Error: Failed to create gist: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✓")
+			finalGistID = newGist.ID
+			fmt.Printf("Gist URL: %s\n", newGist.HTMLURL)
+		}
 	}
 
 	// Create config
@@ -153,6 +188,61 @@ func cmdInit(args []string) {
 	fmt.Println("在其他设备上:")
 	fmt.Println("  1. 运行 'claude-sync init --gist-id " + finalGistID + "'")
 	fmt.Println("  2. 运行 'claude-sync pull' 拉取配置")
+}
+
+func findClaudeSyncGist(client *gist.Client) (string, error) {
+	const perPage = 100
+	const maxPages = 5
+
+	for page := 1; page <= maxPages; page++ {
+		gists, err := client.List(page, perPage)
+		if err != nil {
+			return "", err
+		}
+		if len(gists) == 0 {
+			return "", nil
+		}
+
+		for _, g := range gists {
+			if g.Files == nil {
+				continue
+			}
+			if _, ok := g.Files["claude-sync.meta.json"]; !ok {
+				continue
+			}
+
+			full, err := client.Get(g.ID)
+			if err != nil {
+				continue
+			}
+			metaFile, ok := full.Files["claude-sync.meta.json"]
+			if !ok {
+				continue
+			}
+			repo, ok := parseMetaRepo(metaFile.Content)
+			if ok && repo == config.RepoURL {
+				return g.ID, nil
+			}
+		}
+	}
+
+	return "", nil
+}
+
+func parseMetaRepo(content string) (string, bool) {
+	if strings.TrimSpace(content) == "" {
+		return "", false
+	}
+	var meta struct {
+		Repo string `json:"repo"`
+	}
+	if err := json.Unmarshal([]byte(content), &meta); err != nil {
+		return "", false
+	}
+	if meta.Repo == "" {
+		return "", false
+	}
+	return meta.Repo, true
 }
 
 func cmdPush(args []string) {
@@ -198,7 +288,14 @@ func cmdPull(args []string) {
 	dryRun := fs.Bool("dry-run", false, "Preview changes without actually pulling")
 	force := fs.Bool("force", false, "Force pull even if there are conflicts")
 	keepHooks := fs.Bool("keep-hooks", false, "Keep local hooks, don't overwrite with remote")
+	autoYes := fs.Bool("y", false, "Auto-confirm all changes")
+	autoYesLong := fs.Bool("yes", false, "Auto-confirm all changes")
+	applyMCP := fs.Bool("apply-mcp", false, "Apply global MCP config to current project after pull")
+	applyMCPOverwrite := fs.Bool("apply-mcp-overwrite", false, "Overwrite project MCP config when applying")
 	fs.Parse(args)
+
+	// 合并 -y 和 --yes
+	confirmAll := *autoYes || *autoYesLong
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -217,6 +314,9 @@ func cmdPull(args []string) {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// 设置自动确认模式
+	engine.SetAutoYes(confirmAll)
 
 	if *dryRun {
 		fmt.Println("Dry run - no changes will be made")
@@ -309,6 +409,38 @@ func cmdPull(args []string) {
 	}
 
 	printResults("Pull", results, *dryRun)
+
+	// 如果指定了 --apply-mcp，同步 MCP 到当前项目
+	if *applyMCP && !*dryRun {
+		fmt.Println()
+		if err := mcp.SyncMCPToCurrentProject(confirmAll, *applyMCPOverwrite); err != nil {
+			fmt.Printf("MCP 同步失败: %v\n", err)
+		}
+	}
+}
+
+// cmdMCPApply 将全局 MCP 配置应用到当前项目
+func cmdMCPApply(args []string) {
+	fs := flag.NewFlagSet("mcp-apply", flag.ExitOnError)
+	autoYes := fs.Bool("y", false, "Auto-confirm changes")
+	autoYesLong := fs.Bool("yes", false, "Auto-confirm changes")
+	silent := fs.Bool("q", false, "Quiet/silent mode: no output if already synced")
+	silentLong := fs.Bool("silent", false, "Quiet/silent mode: no output if already synced")
+	overwrite := fs.Bool("overwrite", false, "Overwrite project MCP config (default merges)")
+	fs.Parse(args)
+
+	opts := mcp.SyncOptions{
+		AutoYes:  *autoYes || *autoYesLong,
+		Silent:   *silent || *silentLong,
+		Overwrite: *overwrite,
+	}
+
+	if err := mcp.SyncMCPToCurrentProjectWithOptions(opts); err != nil {
+		if !opts.Silent {
+			fmt.Printf("Error: %v\n", err)
+		}
+		os.Exit(1)
+	}
 }
 
 func cmdStatus(args []string) {

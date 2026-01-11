@@ -11,6 +11,7 @@ import (
 
 	"github.com/yxuechao007/claude_sync/internal/archive"
 	"github.com/yxuechao007/claude_sync/internal/config"
+	"github.com/yxuechao007/claude_sync/internal/diff"
 	"github.com/yxuechao007/claude_sync/internal/filter"
 	"github.com/yxuechao007/claude_sync/internal/gist"
 )
@@ -40,9 +41,15 @@ type ItemStatus struct {
 
 // Engine handles the sync operations
 type Engine struct {
-	cfg    *config.Config
-	state  *config.SyncState
-	client *gist.Client
+	cfg     *config.Config
+	state   *config.SyncState
+	client  *gist.Client
+	autoYes bool // 自动确认所有修改
+}
+
+// SetAutoYes 设置是否自动确认所有修改
+func (e *Engine) SetAutoYes(yes bool) {
+	e.autoYes = yes
 }
 
 // NewEngine creates a new sync engine
@@ -182,6 +189,14 @@ func (e *Engine) calculateLocalHash(item config.SyncItem) (string, error) {
 			return "", err
 		}
 	}
+
+	// 对 settings 文件过滤包含本地内容的 hooks（与 push 保持一致）
+	if item.Name == "settings" {
+		filteredData, filteredTypes, err := filter.FilterLocalHooks(data)
+		if err == nil && len(filteredTypes) > 0 {
+			data = filteredData
+		}
+	}
 	if len(data) == 0 {
 		return "", nil
 	}
@@ -239,6 +254,7 @@ func (e *Engine) Push(dryRun bool, force bool) ([]ItemStatus, error) {
 				continue
 			}
 
+			status.LocalHash = calculateHash(content)
 			updates[item.GistFile] = content
 			status.Status = StatusSynced
 			results = append(results, status)
@@ -324,6 +340,58 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 					results = append(results, status)
 					continue
 				}
+
+				preparedContent := remoteFile.Content
+				if item.Type != "directory" {
+					updated, err := e.prepareWriteContent(*item, remoteFile.Content)
+					if err != nil {
+						status.Error = err
+						status.Status = StatusError
+						results = append(results, status)
+						continue
+					}
+					preparedContent = updated
+				}
+
+				// 读取本地当前内容用于 diff 显示
+				localPath, _ := config.ExpandPath(item.LocalPath)
+				var localContent string
+				if item.Type != "directory" {
+					if data, err := os.ReadFile(localPath); err == nil {
+						localContent = string(data)
+					}
+				}
+
+				// 显示 diff 并等待确认（仅对文件类型）
+				if item.Type != "directory" && localContent != "" {
+					diff.ShowDiff(item.LocalPath, localContent, preparedContent)
+					result := diff.ConfirmChange(item.LocalPath, e.autoYes)
+
+					switch result {
+					case diff.ConfirmNo:
+						status.Status = StatusLocalAhead // 保持本地版本
+						results = append(results, status)
+						continue
+					case diff.ConfirmQuit:
+						return results, fmt.Errorf("用户取消操作")
+					case diff.ConfirmAll:
+						e.autoYes = true
+					case diff.ConfirmPreview:
+						diff.ShowPreview(item.LocalPath, preparedContent)
+						// 再次确认
+						result = diff.ConfirmChange(item.LocalPath, e.autoYes)
+						if result == diff.ConfirmNo {
+							status.Status = StatusLocalAhead
+							results = append(results, status)
+							continue
+						} else if result == diff.ConfirmQuit {
+							return results, fmt.Errorf("用户取消操作")
+						} else if result == diff.ConfirmAll {
+							e.autoYes = true
+						}
+					}
+				}
+
 				if err := e.writeLocalContent(*item, remoteFile.Content); err != nil {
 					status.Error = err
 					status.Status = StatusError
@@ -403,11 +471,52 @@ func (e *Engine) getLocalContent(item config.SyncItem) (string, bool, error) {
 			return "", false, err
 		}
 	}
+
+	// 对 settings 文件过滤包含本地内容的 hooks（push 时）
+	if item.Name == "settings" {
+		filteredData, filteredTypes, err := filter.FilterLocalHooks(data)
+		if err == nil && len(filteredTypes) > 0 {
+			data = filteredData
+			// 可以在这里记录被过滤的 hook 类型
+		}
+	}
+
 	if len(data) == 0 {
 		return "", true, nil
 	}
 
 	return string(data), false, nil
+}
+
+func (e *Engine) prepareWriteContent(item config.SyncItem, content string) (string, error) {
+	if item.Type == "directory" {
+		return content, nil
+	}
+
+	if item.Filter == nil {
+		return content, nil
+	}
+
+	filtered, err := filter.FilterJSON([]byte(content), item.Filter)
+	if err != nil {
+		return "", err
+	}
+	content = string(filtered)
+
+	localPath, err := config.ExpandPath(item.LocalPath)
+	if err != nil {
+		return "", err
+	}
+	existing, err := os.ReadFile(localPath)
+	if err == nil {
+		merged, err := filter.MergeJSON(existing, []byte(content), item.Filter)
+		if err != nil {
+			return "", err
+		}
+		content = string(merged)
+	}
+
+	return content, nil
 }
 
 // writeLocalContent writes content to the local path

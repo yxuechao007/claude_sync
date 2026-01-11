@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -16,19 +17,23 @@ import (
 
 const (
 	// GitHub OAuth App Client ID (用于 Device Flow)
-	githubClientID       = "Ov23liWm8A0zJ9iKh7am"
-	githubDeviceCodeURL  = "https://github.com/login/device/code"
-	githubAccessTokenURL = "https://github.com/login/oauth/access_token"
-	githubDeviceAuthURL  = "https://github.com/login/device"
+	defaultGitHubClientID = "Ov23liWm8A0zJ9iKh7am"
+	githubDeviceCodeURL   = "https://github.com/login/device/code"
+	githubAccessTokenURL  = "https://github.com/login/oauth/access_token"
+	githubDeviceAuthURL   = "https://github.com/login/device"
 )
 
 // DeviceCodeResponse GitHub Device Flow 第一步响应
 type DeviceCodeResponse struct {
-	DeviceCode      string `json:"device_code"`
-	UserCode        string `json:"user_code"`
-	VerificationURI string `json:"verification_uri"`
-	ExpiresIn       int    `json:"expires_in"`
-	Interval        int    `json:"interval"`
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
+	Error                   string `json:"error"`
+	ErrorDescription        string `json:"error_description"`
+	ErrorURI                string `json:"error_uri"`
 }
 
 // AccessTokenResponse GitHub Device Flow 第二步响应
@@ -67,79 +72,7 @@ func GetToken() (string, error) {
 
 // browserAuth 使用 GitHub Device Flow 进行 OAuth 认证
 func browserAuth() (string, error) {
-	// 第一步：获取 device code
-	reqBody := fmt.Sprintf("client_id=%s&scope=gist", githubClientID)
-	req, err := http.NewRequest("POST", githubDeviceCodeURL, bytes.NewBufferString(reqBody))
-	if err != nil {
-		return "", fmt.Errorf("创建请求失败: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var deviceResp DeviceCodeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&deviceResp); err != nil {
-		return "", fmt.Errorf("解析响应失败: %w", err)
-	}
-
-	// 显示用户码
-	fmt.Println()
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Printf("  请访问: %s\n", deviceResp.VerificationURI)
-	fmt.Printf("  输入代码: %s\n", deviceResp.UserCode)
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println()
-
-	// 尝试打开浏览器
-	if err := openBrowser(deviceResp.VerificationURI); err != nil {
-		fmt.Println("无法自动打开浏览器，请手动访问上述链接")
-	} else {
-		fmt.Println("已打开浏览器，请在页面中输入上述代码并授权")
-	}
-
-	// 轮询等待用户授权
-	fmt.Print("\n等待授权")
-	interval := time.Duration(deviceResp.Interval) * time.Second
-	if interval < 5*time.Second {
-		interval = 5 * time.Second
-	}
-
-	deadline := time.Now().Add(time.Duration(deviceResp.ExpiresIn) * time.Second)
-
-	for time.Now().Before(deadline) {
-		time.Sleep(interval)
-		fmt.Print(".")
-
-		token, err := pollForToken(githubClientID, deviceResp.DeviceCode)
-		if err != nil {
-			if err.Error() == "slow_down" {
-				interval += 5 * time.Second
-			}
-			continue
-		}
-		if token != "" {
-			fmt.Println(" OK")
-			fmt.Println()
-
-			// 自动保存 token
-			if err := saveTokenToConfig(token); err != nil {
-				fmt.Printf("保存 token 失败: %v\n", err)
-			} else {
-				fmt.Println("Token 已保存到 ~/.claude-sync/token")
-			}
-
-			return token, nil
-		}
-	}
-
-	fmt.Println(" 超时")
-	return "", fmt.Errorf("授权超时，请重试")
+	return deviceFlowAuth(resolveClientID(), true)
 }
 
 // manualTokenInput 手动输入 token
@@ -207,6 +140,7 @@ func validateToken(token string) error {
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "claude-sync")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -308,63 +242,7 @@ func openBrowser(url string) error {
 // DeviceFlowAuth 使用 GitHub Device Flow 进行认证
 // 注意：需要一个注册的 OAuth App Client ID
 func DeviceFlowAuth(clientID string) (string, error) {
-	// 第一步：获取 device code
-	reqBody := fmt.Sprintf("client_id=%s&scope=gist", clientID)
-	req, err := http.NewRequest("POST", githubDeviceCodeURL, bytes.NewBufferString(reqBody))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var deviceResp DeviceCodeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&deviceResp); err != nil {
-		return "", err
-	}
-
-	// 显示用户码
-	fmt.Println()
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Printf("请访问: %s\n", deviceResp.VerificationURI)
-	fmt.Printf("并输入代码: %s\n", deviceResp.UserCode)
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println()
-
-	// 尝试打开浏览器
-	openBrowser(deviceResp.VerificationURI)
-
-	// 轮询等待用户授权
-	fmt.Print("等待授权")
-	interval := time.Duration(deviceResp.Interval) * time.Second
-	if interval < 5*time.Second {
-		interval = 5 * time.Second
-	}
-
-	deadline := time.Now().Add(time.Duration(deviceResp.ExpiresIn) * time.Second)
-
-	for time.Now().Before(deadline) {
-		time.Sleep(interval)
-		fmt.Print(".")
-
-		token, err := pollForToken(clientID, deviceResp.DeviceCode)
-		if err != nil {
-			continue
-		}
-		if token != "" {
-			fmt.Println(" ✓")
-			return token, nil
-		}
-	}
-
-	fmt.Println(" ❌ 超时")
-	return "", fmt.Errorf("授权超时")
+	return deviceFlowAuth(clientID, false)
 }
 
 // pollForToken 轮询获取 access token
@@ -378,6 +256,7 @@ func pollForToken(clientID, deviceCode string) (string, error) {
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "claude-sync")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -386,8 +265,16 @@ func pollForToken(clientID, deviceCode string) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("请求失败: %s", strings.TrimSpace(string(body)))
+	}
+
 	var tokenResp AccessTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return "", err
 	}
 
@@ -399,4 +286,150 @@ func pollForToken(clientID, deviceCode string) (string, error) {
 	}
 
 	return tokenResp.AccessToken, nil
+}
+
+func resolveClientID() string {
+	envVars := []string{
+		"CLAUDE_SYNC_GITHUB_CLIENT_ID",
+		"GITHUB_OAUTH_CLIENT_ID",
+		"GITHUB_CLIENT_ID",
+	}
+	for _, env := range envVars {
+		if value := strings.TrimSpace(os.Getenv(env)); value != "" {
+			return value
+		}
+	}
+	return defaultGitHubClientID
+}
+
+func requestDeviceCode(clientID string) (*DeviceCodeResponse, error) {
+	reqBody := fmt.Sprintf("client_id=%s&scope=gist", clientID)
+	req, err := http.NewRequest("POST", githubDeviceCodeURL, bytes.NewBufferString(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "claude-sync")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("请求失败: %s", strings.TrimSpace(string(body)))
+	}
+
+	var deviceResp DeviceCodeResponse
+	if err := json.Unmarshal(body, &deviceResp); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+	if deviceResp.Error != "" {
+		if deviceResp.ErrorDescription != "" {
+			return nil, fmt.Errorf("%s: %s", deviceResp.Error, deviceResp.ErrorDescription)
+		}
+		return nil, fmt.Errorf(deviceResp.Error)
+	}
+	if deviceResp.UserCode == "" {
+		return nil, fmt.Errorf("无效响应: 缺少 user_code")
+	}
+	if deviceResp.VerificationURI == "" {
+		deviceResp.VerificationURI = githubDeviceAuthURL
+	}
+	if deviceResp.VerificationURIComplete == "" {
+		deviceResp.VerificationURIComplete = fmt.Sprintf("%s?user_code=%s",
+			deviceResp.VerificationURI, url.QueryEscape(deviceResp.UserCode))
+	}
+	if deviceResp.Interval <= 0 {
+		deviceResp.Interval = 5
+	}
+
+	return &deviceResp, nil
+}
+
+func deviceFlowAuth(clientID string, saveToken bool) (string, error) {
+	deviceResp, err := requestDeviceCode(clientID)
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Println()
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Printf("  请访问: %s\n", deviceResp.VerificationURI)
+	if deviceResp.VerificationURIComplete != "" {
+		fmt.Printf("  一键链接: %s\n", deviceResp.VerificationURIComplete)
+	}
+	fmt.Printf("  输入代码: %s\n", deviceResp.UserCode)
+	fmt.Println("  提示: 网页不会显示代码，请将上方代码填入授权页面")
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Println()
+
+	openURL := deviceResp.VerificationURIComplete
+	if openURL == "" {
+		openURL = deviceResp.VerificationURI
+	}
+
+	if err := openBrowser(openURL); err != nil {
+		fmt.Println("无法自动打开浏览器，请手动访问上述链接")
+	} else {
+		fmt.Println("已打开浏览器，请在页面中输入上述代码并授权")
+	}
+
+	fmt.Print("\n等待授权")
+	interval := time.Duration(deviceResp.Interval) * time.Second
+	if interval < 5*time.Second {
+		interval = 5 * time.Second
+	}
+
+	deadline := time.Now().Add(15 * time.Minute)
+	if deviceResp.ExpiresIn > 0 {
+		deadline = time.Now().Add(time.Duration(deviceResp.ExpiresIn) * time.Second)
+	}
+
+	for time.Now().Before(deadline) {
+		time.Sleep(interval)
+		fmt.Print(".")
+
+		token, err := pollForToken(clientID, deviceResp.DeviceCode)
+		if err != nil {
+			switch err.Error() {
+			case "slow_down":
+				interval += 5 * time.Second
+				continue
+			case "access_denied":
+				fmt.Println(" ❌")
+				return "", fmt.Errorf("用户拒绝授权")
+			case "expired_token":
+				fmt.Println(" ❌")
+				return "", fmt.Errorf("授权已过期，请重新获取代码")
+			default:
+				fmt.Println(" ❌")
+				return "", err
+			}
+		}
+		if token != "" {
+			fmt.Println(" OK")
+			fmt.Println()
+
+			if saveToken {
+				if err := saveTokenToConfig(token); err != nil {
+					fmt.Printf("保存 token 失败: %v\n", err)
+				} else {
+					fmt.Println("Token 已保存到 ~/.claude-sync/token")
+				}
+			}
+
+			return token, nil
+		}
+	}
+
+	fmt.Println(" 超时")
+	return "", fmt.Errorf("授权超时，请重试")
 }

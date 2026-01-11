@@ -86,3 +86,30 @@ func TestGetItemStatusMissingLocalTreatsRemoteAhead(t *testing.T) {
 		t.Fatalf("status = %q, want %q", status.Status, StatusRemoteAhead)
 	}
 }
+
+func TestCalculateLocalHashFiltersLocalHooks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	data := `{"hooks":{"on_start":{"command":"echo /Users/test/secret"}}}`
+	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	engine := &Engine{}
+	item := config.SyncItem{
+		Name:      "settings",
+		LocalPath: path,
+		Type:      "file",
+	}
+
+	hash, err := engine.calculateLocalHash(item)
+	if err != nil {
+		t.Fatalf("calculateLocalHash: %v", err)
+	}
+
+	expected := calculateHash("{}")
+	if hash != expected {
+		t.Fatalf("hash = %q, want %q", hash, expected)
+	}
+}
