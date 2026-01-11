@@ -173,6 +173,7 @@ claude_sync help                    # 帮助信息
 
 - 使用 SHA256 计算内容 hash
 - 记录 `LocalHash` 和 `RemoteHash` 到 `state.json`
+- 使用 `claude_sync.meta.json` 中的 `version` 判定更新方向（本地改动会提升本地版本，远端改动提升远端版本）
 - 状态判断：
   - `synced` - 本地 = 远程
   - `local_ahead` - 本地有新改动

@@ -48,6 +48,26 @@ type Engine struct {
 	autoYes bool // 自动确认所有修改
 }
 
+type syncDirection string
+
+const (
+	directionSynced   syncDirection = "synced"
+	directionLocal    syncDirection = "local"
+	directionRemote   syncDirection = "remote"
+	directionConflict syncDirection = "conflict"
+)
+
+type statusInfo struct {
+	meta                   syncMeta
+	metaNeedsUpdate        bool
+	remoteVersion          int
+	effectiveRemoteVersion int
+	localVersion           int
+	localDirty             bool
+	remoteDirty            bool
+	direction              syncDirection
+}
+
 // SetAutoYes 设置是否自动确认所有修改
 func (e *Engine) SetAutoYes(yes bool) {
 	e.autoYes = yes
@@ -74,83 +94,139 @@ func (e *Engine) GetStatus() ([]ItemStatus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get gist: %w", err)
 	}
+	statuses, _, err := e.getStatusWithRemote(remoteGist)
+	return statuses, err
+}
+
+func (e *Engine) getStatusWithRemote(remoteGist *gist.Gist) ([]ItemStatus, statusInfo, error) {
+	var info statusInfo
+	var metaContent string
+	if metaFile, ok := remoteGist.Files[syncMetaFile]; ok {
+		metaContent = metaFile.Content
+	}
+	meta, err := readSyncMeta(metaContent)
+	if err != nil {
+		return nil, info, fmt.Errorf("failed to parse sync meta: %w", err)
+	}
+	meta, metaNeedsUpdate := ensureSyncMetaRepo(meta)
+	info.meta = meta
+	info.metaNeedsUpdate = metaNeedsUpdate
+	info.remoteVersion = meta.Version
+
+	type itemSnapshot struct {
+		status        ItemStatus
+		localHash     string
+		remoteHash    string
+		localChanged  bool
+		remoteChanged bool
+	}
+
+	var snapshots []itemSnapshot
+	for _, item := range e.cfg.GetEnabledItems() {
+		status := ItemStatus{
+			Name:      item.Name,
+			LocalPath: item.LocalPath,
+			GistFile:  item.GistFile,
+		}
+
+		localHash, err := e.calculateLocalHash(item)
+		if err != nil {
+			status.Status = StatusError
+			status.Error = err
+			snapshots = append(snapshots, itemSnapshot{status: status})
+			continue
+		}
+		status.LocalHash = localHash
+
+		remoteHash := ""
+		if remoteFile, exists := remoteGist.Files[item.GistFile]; exists {
+			remoteHash = calculateHash(remoteFile.Content)
+		}
+		status.RemoteHash = remoteHash
+
+		lastState, hasState := e.state.Items[item.Name]
+		localChanged := false
+		remoteChanged := false
+		if !hasState {
+			localChanged = localHash != ""
+			remoteChanged = remoteHash != ""
+		} else {
+			localChanged = localHash != lastState.LocalHash
+			remoteChanged = remoteHash != lastState.RemoteHash
+		}
+
+		if localChanged {
+			info.localDirty = true
+		}
+		if remoteChanged {
+			info.remoteDirty = true
+		}
+
+		snapshots = append(snapshots, itemSnapshot{
+			status:        status,
+			localHash:     localHash,
+			remoteHash:    remoteHash,
+			localChanged:  localChanged,
+			remoteChanged: remoteChanged,
+		})
+	}
+
+	localVersion := e.state.Version
+	if info.localDirty {
+		localVersion++
+	}
+	info.localVersion = localVersion
+
+	effectiveRemoteVersion := info.remoteVersion
+	if info.remoteDirty && effectiveRemoteVersion <= e.state.Version {
+		effectiveRemoteVersion = e.state.Version + 1
+	}
+	info.effectiveRemoteVersion = effectiveRemoteVersion
+
+	switch {
+	case !info.localDirty && !info.remoteDirty:
+		info.direction = directionSynced
+	case info.localVersion > effectiveRemoteVersion:
+		info.direction = directionLocal
+	case effectiveRemoteVersion > info.localVersion:
+		info.direction = directionRemote
+	default:
+		if info.localDirty && info.remoteDirty {
+			info.direction = directionConflict
+		} else if info.localDirty {
+			info.direction = directionLocal
+		} else {
+			info.direction = directionRemote
+		}
+	}
 
 	var statuses []ItemStatus
+	for _, snap := range snapshots {
+		status := snap.status
+		if status.Status == StatusError {
+			statuses = append(statuses, status)
+			continue
+		}
 
-	for _, item := range e.cfg.GetEnabledItems() {
-		status := e.getItemStatus(item, remoteGist)
+		if snap.localHash == snap.remoteHash {
+			status.Status = StatusSynced
+		} else {
+			switch info.direction {
+			case directionLocal:
+				status.Status = StatusLocalAhead
+			case directionRemote:
+				status.Status = StatusRemoteAhead
+			case directionConflict:
+				status.Status = StatusConflict
+			default:
+				status.Status = StatusConflict
+			}
+		}
+
 		statuses = append(statuses, status)
 	}
 
-	return statuses, nil
-}
-
-// getItemStatus calculates the status for a single item
-func (e *Engine) getItemStatus(item config.SyncItem, remoteGist *gist.Gist) ItemStatus {
-	status := ItemStatus{
-		Name:      item.Name,
-		LocalPath: item.LocalPath,
-		GistFile:  item.GistFile,
-	}
-
-	// Calculate local hash
-	localHash, err := e.calculateLocalHash(item)
-	if err != nil {
-		status.Status = StatusError
-		status.Error = err
-		return status
-	}
-	status.LocalHash = localHash
-
-	// Get remote hash
-	remoteFile, exists := remoteGist.Files[item.GistFile]
-	if !exists {
-		if localHash == "" {
-			status.Status = StatusSynced
-		} else {
-			status.Status = StatusLocalAhead
-		}
-		return status
-	}
-
-	remoteHash := calculateHash(remoteFile.Content)
-	status.RemoteHash = remoteHash
-
-	// Get last known state
-	lastState, hasState := e.state.Items[item.Name]
-
-	// Determine status
-	if localHash == remoteHash {
-		status.Status = StatusSynced
-	} else if !hasState {
-		// First sync, treat as conflict if both exist
-		if localHash == "" {
-			status.Status = StatusRemoteAhead
-		} else {
-			status.Status = StatusConflict
-		}
-	} else {
-		if localHash == "" && lastState.LocalHash != "" {
-			status.Status = StatusRemoteAhead
-			return status
-		}
-
-		// Check what changed since last sync
-		localChanged := localHash != lastState.LocalHash
-		remoteChanged := remoteHash != lastState.RemoteHash
-
-		if localChanged && remoteChanged {
-			status.Status = StatusConflict
-		} else if localChanged {
-			status.Status = StatusLocalAhead
-		} else if remoteChanged {
-			status.Status = StatusRemoteAhead
-		} else {
-			status.Status = StatusSynced
-		}
-	}
-
-	return status
+	return statuses, info, nil
 }
 
 // calculateLocalHash calculates the hash of local content
@@ -217,7 +293,11 @@ func (e *Engine) calculateLocalHash(item config.SyncItem) (string, error) {
 
 // Push uploads local content to the gist
 func (e *Engine) Push(dryRun bool, force bool) ([]ItemStatus, error) {
-	statuses, err := e.GetStatus()
+	remoteGist, err := e.client.Get(e.cfg.GistID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get gist: %w", err)
+	}
+	statuses, info, err := e.getStatusWithRemote(remoteGist)
 	if err != nil {
 		return nil, err
 	}
@@ -273,8 +353,20 @@ func (e *Engine) Push(dryRun bool, force bool) ([]ItemStatus, error) {
 	}
 
 	if !dryRun && len(updates) > 0 {
-		_, err := e.client.Update(e.cfg.GistID, updates)
+		meta := info.meta
+		if meta.Version < e.state.Version {
+			meta.Version = e.state.Version
+		}
+		meta.Version = maxInt(meta.Version, info.remoteVersion) + 1
+		meta, _ = ensureSyncMetaRepo(meta)
+
+		metaContent, err := marshalJSON(meta)
 		if err != nil {
+			return nil, fmt.Errorf("failed to marshal sync meta: %w", err)
+		}
+		updates[syncMetaFile] = string(metaContent)
+
+		if _, err := e.client.Update(e.cfg.GistID, updates); err != nil {
 			return nil, fmt.Errorf("failed to update gist: %w", err)
 		}
 
@@ -290,8 +382,22 @@ func (e *Engine) Push(dryRun bool, force bool) ([]ItemStatus, error) {
 			}
 		}
 		e.state.LastSync = &now
+		e.state.Version = meta.Version
 		if err := e.state.Save(); err != nil {
 			return nil, fmt.Errorf("failed to save state: %w", err)
+		}
+	} else if !dryRun && len(updates) == 0 && info.metaNeedsUpdate {
+		meta := info.meta
+		if meta.Version < e.state.Version {
+			meta.Version = e.state.Version
+		}
+		meta, _ = ensureSyncMetaRepo(meta)
+		metaContent, err := marshalJSON(meta)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal sync meta: %w", err)
+		}
+		if _, err := e.client.Update(e.cfg.GistID, map[string]string{syncMetaFile: string(metaContent)}); err != nil {
+			return nil, fmt.Errorf("failed to update gist meta: %w", err)
 		}
 	}
 
@@ -300,17 +406,17 @@ func (e *Engine) Push(dryRun bool, force bool) ([]ItemStatus, error) {
 
 // Pull downloads content from the gist to local
 func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
-	statuses, err := e.GetStatus()
-	if err != nil {
-		return nil, err
-	}
-
 	remoteGist, err := e.client.Get(e.cfg.GistID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get gist: %w", err)
 	}
+	statuses, info, err := e.getStatusWithRemote(remoteGist)
+	if err != nil {
+		return nil, err
+	}
 
 	var results []ItemStatus
+	appliedAny := false
 
 	for _, status := range statuses {
 		item := e.findItem(status.Name)
@@ -409,6 +515,7 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 					results = append(results, status)
 					continue
 				}
+				appliedAny = true
 
 				localHash, err := e.calculateLocalHash(*item)
 				if err != nil {
@@ -438,8 +545,24 @@ func (e *Engine) Pull(dryRun bool, force bool) ([]ItemStatus, error) {
 			}
 		}
 		e.state.LastSync = &now
+		if appliedAny {
+			e.state.Version = info.effectiveRemoteVersion
+		}
 		if err := e.state.Save(); err != nil {
 			return nil, fmt.Errorf("failed to save state: %w", err)
+		}
+
+		if appliedAny && (info.effectiveRemoteVersion > info.remoteVersion || info.metaNeedsUpdate) {
+			meta := info.meta
+			meta.Version = info.effectiveRemoteVersion
+			meta, _ = ensureSyncMetaRepo(meta)
+			metaContent, err := marshalJSON(meta)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal sync meta: %w", err)
+			}
+			if _, err := e.client.Update(e.cfg.GistID, map[string]string{syncMetaFile: string(metaContent)}); err != nil {
+				return nil, fmt.Errorf("failed to update gist meta: %w", err)
+			}
 		}
 	}
 
@@ -650,17 +773,17 @@ func (e *Engine) CheckRemoteHooksForLocalContent() ([]HooksWarning, error) {
 // PullWithHooksStrategy 带有 hooks 策略的 pull
 // hooksStrategy: "overwrite" - 覆盖本地 hooks, "keep" - 保留本地 hooks, "merge" - 智能合并
 func (e *Engine) PullWithHooksStrategy(dryRun bool, force bool, hooksStrategy string) ([]ItemStatus, error) {
-	statuses, err := e.GetStatus()
-	if err != nil {
-		return nil, err
-	}
-
 	remoteGist, err := e.client.Get(e.cfg.GistID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get gist: %w", err)
 	}
+	statuses, info, err := e.getStatusWithRemote(remoteGist)
+	if err != nil {
+		return nil, err
+	}
 
 	var results []ItemStatus
+	appliedAny := false
 
 	for _, status := range statuses {
 		item := e.findItem(status.Name)
@@ -738,6 +861,7 @@ func (e *Engine) PullWithHooksStrategy(dryRun bool, force bool, hooksStrategy st
 					results = append(results, status)
 					continue
 				}
+				appliedAny = true
 
 				localHash, err := e.calculateLocalHash(*item)
 				if err != nil {
@@ -767,8 +891,24 @@ func (e *Engine) PullWithHooksStrategy(dryRun bool, force bool, hooksStrategy st
 			}
 		}
 		e.state.LastSync = &now
+		if appliedAny {
+			e.state.Version = info.effectiveRemoteVersion
+		}
 		if err := e.state.Save(); err != nil {
 			return nil, fmt.Errorf("failed to save state: %w", err)
+		}
+
+		if appliedAny && (info.effectiveRemoteVersion > info.remoteVersion || info.metaNeedsUpdate) {
+			meta := info.meta
+			meta.Version = info.effectiveRemoteVersion
+			meta, _ = ensureSyncMetaRepo(meta)
+			metaContent, err := marshalJSON(meta)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal sync meta: %w", err)
+			}
+			if _, err := e.client.Update(e.cfg.GistID, map[string]string{syncMetaFile: string(metaContent)}); err != nil {
+				return nil, fmt.Errorf("failed to update gist meta: %w", err)
+			}
 		}
 	}
 

@@ -13,14 +13,7 @@ import (
 	"github.com/yxuechao007/claude_sync/internal/config"
 )
 
-const mcpMetaFile = "claude_sync.meta.json"
-
 var mcpKeys = []string{"mcp", "mcpServers"}
-
-type mcpMeta struct {
-	Version int    `json:"version"`
-	Repo    string `json:"repo,omitempty"`
-}
 
 type localWrite struct {
 	item    config.SyncItem
@@ -39,19 +32,15 @@ func (e *Engine) SyncMCPOnInit() error {
 		return fmt.Errorf("failed to get gist: %w", err)
 	}
 
-	meta, err := readMCPMeta(remoteGist.Files[mcpMetaFile].Content)
+	meta, err := readSyncMeta(remoteGist.Files[syncMetaFile].Content)
 	if err != nil {
 		return fmt.Errorf("failed to parse MCP meta: %w", err)
 	}
 
 	remoteVersion := meta.Version
-	localVersion := e.state.MCPVersion
+	localVersion := e.state.Version
 	preferLocal := localVersion >= remoteVersion
-	metaNeedsUpdate := false
-	if meta.Repo == "" {
-		meta.Repo = config.RepoURL
-		metaNeedsUpdate = true
-	}
+	meta, metaNeedsUpdate := ensureSyncMetaRepo(meta)
 
 	updates := make(map[string]string)
 	var writes []localWrite
@@ -152,7 +141,7 @@ func (e *Engine) SyncMCPOnInit() error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal MCP meta: %w", err)
 		}
-		updates[mcpMetaFile] = string(metaContent)
+		updates[syncMetaFile] = string(metaContent)
 
 		if _, err := e.client.Update(e.cfg.GistID, updates); err != nil {
 			return fmt.Errorf("failed to update gist: %w", err)
@@ -181,25 +170,12 @@ func (e *Engine) SyncMCPOnInit() error {
 	if len(mcpItems) > 0 {
 		e.state.LastSync = &now
 	}
-	e.state.MCPVersion = remoteVersion
+	e.state.Version = remoteVersion
 	if err := e.state.Save(); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
 
 	return nil
-}
-
-func readMCPMeta(content string) (mcpMeta, error) {
-	if strings.TrimSpace(content) == "" {
-		return mcpMeta{}, nil
-	}
-
-	var meta mcpMeta
-	if err := json.Unmarshal([]byte(content), &meta); err != nil {
-		return mcpMeta{}, err
-	}
-
-	return meta, nil
 }
 
 func isMCPItem(item config.SyncItem) bool {

@@ -50,40 +50,55 @@ func TestCalculateLocalHashMissingFile(t *testing.T) {
 	}
 }
 
-func TestGetItemStatusMissingLocalTreatsRemoteAhead(t *testing.T) {
+func TestGetStatusUsesRemoteVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte(`{"a":"local"}`), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
 
-	content := "remote"
-	remoteHash := calculateHash(content)
+	cfg := &config.Config{
+		SyncItems: []config.SyncItem{
+			{
+				Name:      "settings",
+				LocalPath: path,
+				GistFile:  "settings.json",
+				Enabled:   true,
+				Type:      "file",
+			},
+		},
+	}
 
 	engine := &Engine{
+		cfg: cfg,
 		state: &config.SyncState{
+			Version: 1,
 			Items: map[string]config.ItemState{
 				"settings": {
-					LocalHash:  "previous",
-					RemoteHash: remoteHash,
+					LocalHash:  calculateHash(`{"a":"local"}`),
+					RemoteHash: calculateHash(`{"a":"local"}`),
 				},
 			},
 		},
 	}
 
-	item := config.SyncItem{
-		Name:      "settings",
-		LocalPath: path,
-		GistFile:  "settings.json",
-		Type:      "file",
-	}
-
 	remoteGist := &gist.Gist{
 		Files: map[string]gist.GistFile{
-			"settings.json": {Content: content},
+			"settings.json": {Content: `{"a":"remote"}`},
+			syncMetaFile:    {Content: `{"version":2,"repo":"` + config.RepoURL + `"}`},
 		},
 	}
 
-	status := engine.getItemStatus(item, remoteGist)
-	if status.Status != StatusRemoteAhead {
-		t.Fatalf("status = %q, want %q", status.Status, StatusRemoteAhead)
+	statuses, _, err := engine.getStatusWithRemote(remoteGist)
+	if err != nil {
+		t.Fatalf("getStatusWithRemote: %v", err)
+	}
+
+	if len(statuses) != 1 {
+		t.Fatalf("statuses len = %d, want 1", len(statuses))
+	}
+	if statuses[0].Status != StatusRemoteAhead {
+		t.Fatalf("status = %q, want %q", statuses[0].Status, StatusRemoteAhead)
 	}
 }
 

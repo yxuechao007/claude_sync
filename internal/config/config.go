@@ -43,9 +43,9 @@ type Config struct {
 
 // SyncState tracks the state of each synced item
 type SyncState struct {
-	Items      map[string]ItemState `json:"items"`
-	LastSync   *time.Time           `json:"last_sync,omitempty"`
-	MCPVersion int                  `json:"mcp_version,omitempty"`
+	Items    map[string]ItemState `json:"items"`
+	LastSync *time.Time           `json:"last_sync,omitempty"`
+	Version  int                  `json:"version,omitempty"`
 }
 
 // ItemState tracks the hash and sync time for an item
