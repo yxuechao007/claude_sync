@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/user/claude_sync/internal/config"
+	"github.com/yxuechao007/claude_sync/internal/config"
 )
 
 // FilterJSON filters a JSON object based on the filter configuration

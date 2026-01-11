@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/user/claude-sync/internal/config"
-	"github.com/user/claude-sync/internal/gist"
+	"github.com/yxuechao007/claude_sync/internal/config"
+	"github.com/yxuechao007/claude_sync/internal/gist"
 )
 
 func TestCalculateLocalHashEmptyFile(t *testing.T) {

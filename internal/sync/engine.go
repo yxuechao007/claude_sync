@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/user/claude_sync/internal/archive"
-	"github.com/user/claude_sync/internal/config"
-	"github.com/user/claude_sync/internal/filter"
-	"github.com/user/claude_sync/internal/gist"
+	"github.com/yxuechao007/claude_sync/internal/archive"
+	"github.com/yxuechao007/claude_sync/internal/config"
+	"github.com/yxuechao007/claude_sync/internal/filter"
+	"github.com/yxuechao007/claude_sync/internal/gist"
 )
 
 // SyncStatus represents the status of a sync item

@@ -7,10 +7,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/user/claude_sync/internal/auth"
-	"github.com/user/claude_sync/internal/config"
-	"github.com/user/claude_sync/internal/gist"
-	"github.com/user/claude_sync/internal/sync"
+	"github.com/yxuechao007/claude_sync/internal/auth"
+	"github.com/yxuechao007/claude_sync/internal/config"
+	"github.com/yxuechao007/claude_sync/internal/gist"
+	"github.com/yxuechao007/claude_sync/internal/sync"
 )
 
 const version = "0.1.0"
@@ -180,7 +180,8 @@ func cmdPush(args []string) {
 	}
 
 	if *dryRun {
-		fmt.Println("Dry run - no changes will be made\n")
+		fmt.Println("Dry run - no changes will be made")
+		fmt.Println()
 	}
 
 	results, err := engine.Push(*dryRun, *force)
@@ -218,7 +219,8 @@ func cmdPull(args []string) {
 	}
 
 	if *dryRun {
-		fmt.Println("Dry run - no changes will be made\n")
+		fmt.Println("Dry run - no changes will be made")
+		fmt.Println()
 	}
 
 	// Hooks 策略: overwrite(覆盖), keep(保留本地), merge(智能合并)
