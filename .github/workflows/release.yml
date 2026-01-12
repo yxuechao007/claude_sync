@@ -38,6 +38,7 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
         run: |
           output_name="claude_sync"
           if [ "$GOOS" = "windows" ]; then
